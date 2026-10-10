@@ -715,8 +715,8 @@ def statistics_text(chat_id: int):
         lines.extend(f"• {html.escape(row['action'])}: <b>{row['n']}</b>" for row in top)
     else:
         lines.append("Пока нет записей.")
-    lines.append(f"\\n<code>Обновлено: {now.strftime('%Y-%m-%d %H:%M UTC')}</code>")
-    return "\\n".join(lines)
+    lines.append(f"\n<code>Обновлено: {now.strftime('%Y-%m-%d %H:%M UTC')}</code>")
+    return "\n".join(lines)
 
 
 def statistics_keyboard():
@@ -752,12 +752,12 @@ def action_log_page(chat_id: int, page: int = 0, page_size: int = 8):
         action = html.escape(str(row["action"])[:80])
         reason = html.escape(str(row["reason"] or "—")[:180])
         lines.append(
-            f"<b>#{row['id']} · {html.escape(created)}</b>\\n"
-            f"Событие: <code>{action}</code>\\n"
-            f"Инициатор: <code>{html.escape(actor)}</code> · Цель: <code>{html.escape(target)}</code>\\n"
+            f"<b>#{row['id']} · {html.escape(created)}</b>\n"
+            f"Событие: <code>{action}</code>\n"
+            f"Инициатор: <code>{html.escape(actor)}</code> · Цель: <code>{html.escape(target)}</code>\n"
             f"Детали: {reason}"
         )
-    lines.append(f"\\nВсего записей: <b>{total}</b>")
+    lines.append(f"\nВсего записей: <b>{total}</b>")
     buttons = []
     nav = []
     if page > 0:
@@ -771,7 +771,7 @@ def action_log_page(chat_id: int, page: int = 0, page_size: int = 8):
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
     ])
-    return "\\n\\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+    return "\n\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def admin_keyboard():
