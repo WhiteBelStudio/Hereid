@@ -1499,9 +1499,32 @@ async def callbacks(callback: CallbackQuery):
         required_permission = "moderate"
     elif key.startswith("users:card:"):
         required_permission = "panel"
+    # Treat every panel/action namespace as privileged. Unknown callback payloads
+    # must fail closed instead of accidentally reaching a handler without a permission.
+    is_admin_action = (
+        key in {"admin", "commands", "stats"}
+        or key.startswith((
+            "panel:", "roles:", "rp:", "mod:", "chatset:", "users:", "logs:page:"
+        ))
+    )
+    if is_admin_action:
+        if (
+            not callback.message
+            or callback.message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP)
+        ):
+            await callback.answer("⛔ Админ-панель доступна только в группе.", show_alert=True)
+            return
+        if required_permission is None:
+            await callback.answer("⛔ Неизвестное административное действие.", show_alert=True)
+            return
+
     if required_permission:
-        if not callback.message or not await has_permission(
-            callback.message.chat.id, callback.from_user.id, required_permission
+        if (
+            not callback.message
+            or callback.message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP)
+            or not await has_permission(
+                callback.message.chat.id, callback.from_user.id, required_permission
+            )
         ):
             await callback.answer("⛔ Недостаточно прав для этого раздела.", show_alert=True)
             return
