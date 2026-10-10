@@ -17,7 +17,7 @@ from aiogram.filters import Command
 
 load_dotenv()
 from aiogram.types import (
-    CallbackQuery, ChatPermissions, InlineKeyboardButton,
+    CallbackQuery, ChatPermissions, ErrorEvent, InlineKeyboardButton,
     InlineKeyboardMarkup, Message,
 )
 
@@ -443,6 +443,25 @@ async def callbacks(callback: CallbackQuery):
     else:
         await callback.message.edit_text("👋 <b>heradeLegend</b>\nВыберите нужный раздел в меню ниже.", reply_markup=home_keyboard())
     await callback.answer()
+
+
+@dp.errors()
+async def handle_update_error(event: ErrorEvent):
+    """Keep one failed Telegram API request from producing an unhandled update traceback."""
+    error = event.exception
+    if isinstance(error, TelegramNetworkError):
+        log.warning(
+            "Telegram API request timed out or failed while processing an update. "
+            "Check outbound access to api.telegram.org:443 and TELEGRAM_PROXY. "
+            "The response could not be delivered because the connection failed."
+        )
+        return True
+    log.error(
+        "Unhandled update error (%s). Update processing was stopped for this update.",
+        type(error).__name__,
+        exc_info=(type(error), error, error.__traceback__),
+    )
+    return True
 
 
 async def main():
