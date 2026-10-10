@@ -15,7 +15,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command
 
 load_dotenv()
@@ -453,10 +453,25 @@ def record(table, chat_id, user_id, moderator_id, reason):
 
 
 def log_action(chat_id, user_id, moderator_id, action, reason):
+    """Write actions safely to current and legacy database schemas."""
     with db() as con:
+        columns = {
+            row["name"] for row in con.execute("PRAGMA table_info(actions)").fetchall()
+        }
+        fields = ["chat_id", "user_id", "moderator_id", "action", "reason", "created_at"]
+        values = [
+            chat_id, user_id, moderator_id, action, reason or "",
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ]
+        # Some deployed databases still require a NOT NULL details column.
+        if "details" in columns:
+            fields.append("details")
+            values.append(reason or "")
+
+        placeholders = ",".join("?" for _ in fields)
         con.execute(
-            "INSERT INTO actions(chat_id,user_id,moderator_id,action,reason,created_at) VALUES(?,?,?,?,?,?)",
-            (chat_id, user_id, moderator_id, action, reason, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            f"INSERT INTO actions({','.join(fields)}) VALUES({placeholders})",
+            values,
         )
         con.commit()
 
@@ -2082,6 +2097,10 @@ async def handle_update_error(event: ErrorEvent):
             "Check outbound access to api.telegram.org:443 and TELEGRAM_PROXY. "
             "The response could not be delivered because the connection failed."
         )
+        return True
+    if isinstance(error, TelegramBadRequest) and "message is not modified" in str(error).lower():
+        # Re-rendering an unchanged panel is harmless; do not emit an error traceback.
+        log.debug("Skipped editing an unchanged Telegram message.")
         return True
     log.error(
         "Unhandled update error (%s). Update processing was stopped for this update.",
