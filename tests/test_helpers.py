@@ -61,6 +61,60 @@ def test_database_migrations_preserve_records(tmp_path, monkeypatch):
     assert migration_count >= 1
 
 
+def test_legacy_moderation_tables_get_active_columns_without_data_loss(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy_moderation.sqlite3"
+    monkeypatch.setattr(main, "DB_PATH", str(db_path))
+
+    # Older versions may have warnings/reprimands without the active flag.
+    with sqlite3.connect(db_path) as con:
+        con.execute("""
+            CREATE TABLE warnings(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                moderator_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE reprimands(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                moderator_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        con.execute(
+            "INSERT INTO warnings(chat_id,user_id,moderator_id,reason,created_at) VALUES(?,?,?,?,?)",
+            (-100111, 222, 333, "legacy warning", "2026-10-01T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO reprimands(chat_id,user_id,moderator_id,reason,created_at) VALUES(?,?,?,?,?)",
+            (-100111, 222, 333, "legacy reprimand", "2026-10-01T00:00:00+00:00"),
+        )
+
+    main.init_db()
+    main.init_db()  # The migration must be idempotent.
+
+    with main.db() as con:
+        warning_columns = {row["name"] for row in con.execute("PRAGMA table_info(warnings)")}
+        reprimand_columns = {row["name"] for row in con.execute("PRAGMA table_info(reprimands)")}
+        warning = con.execute("SELECT reason,active FROM warnings").fetchone()
+        reprimand = con.execute("SELECT reason,active FROM reprimands").fetchone()
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+
+    assert "active" in warning_columns
+    assert "active" in reprimand_columns
+    assert (warning["reason"], warning["active"]) == ("legacy warning", 1)
+    assert (reprimand["reason"], reprimand["active"]) == ("legacy reprimand", 1)
+    assert version >= 3
+
+
 def test_legacy_actions_table_gets_reason_column_without_data_loss(tmp_path, monkeypatch):
     import sqlite3
 
