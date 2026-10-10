@@ -379,14 +379,14 @@ def level_up_announcement(previous_xp: int, current_xp: int, display_name: str) 
             closer = MILESTONE_CLOSERS[(milestone_index * 7 - 1) % len(MILESTONE_CLOSERS)]
             celebration = f"{opener}! Ты достиг {current_level}-го уровня — {closer}"
         return (
-            f"🎊 <b>НЕВЕРОЯТНОЕ ДОСТИЖЕНИЕ!</b>\\n\\n"
-            f"👑 <b>{safe_name}</b>, ты достиг <b>{current_level}-го уровня!</b>\\n"
+            f"🎊 <b>НЕВЕРОЯТНОЕ ДОСТИЖЕНИЕ!</b>\n\n"
+            f"👑 <b>{safe_name}</b>, ты достиг <b>{current_level}-го уровня!</b>\n"
             f"🌠 {html.escape(celebration)}"
         )
     return (
-        f"🎉 <b>НОВЫЙ УРОВЕНЬ!</b>\\n\\n"
-        f"✨ <b>{safe_name}</b>, теперь у тебя <b>{current_level}-й уровень</b>!\\n"
-        f"⭐ Опыт: <b>{current_xp} XP</b>\\n"
+        f"🎉 <b>НОВЫЙ УРОВЕНЬ!</b>\n\n"
+        f"✨ <b>{safe_name}</b>, теперь у тебя <b>{current_level}-й уровень</b>!\n"
+        f"⭐ Опыт: <b>{current_xp} XP</b>\n"
         "Продолжай участвовать в жизни чата — впереди новые достижения!"
     )
 
@@ -1379,14 +1379,14 @@ async def xp_command(message: Message):
     filled = progress["percent"] // 10
     progress_bar = "🟦" * filled + "⬜" * (10 - filled)
     await message.answer(
-        "✨ <b>ТВОЙ ПРОФИЛЬ ОПЫТА</b>\\n\\n"
-        f"👤 <b>{display_name}</b>{username}\\n"
-        f"🏅 Уровень: <b>{progress['level']}</b>\\n"
-        f"⭐ Опыт: <b>{profile['xp']} XP</b>\\n"
-        f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\\n"
-        f"{progress_bar} <b>{progress['percent']}%</b>\\n"
-        f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\\n"
-        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\\n\\n"
+        "✨ <b>ТВОЙ ПРОФИЛЬ ОПЫТА</b>\n\n"
+        f"👤 <b>{display_name}</b>{username}\n"
+        f"🏅 Уровень: <b>{progress['level']}</b>\n"
+        f"⭐ Опыт: <b>{profile['xp']} XP</b>\n"
+        f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\n"
+        f"{progress_bar} <b>{progress['percent']}%</b>\n"
+        f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\n"
+        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\n\n"
         "Пиши по делу и участвуй в жизни чата — опыт начисляется постепенно."
     )
 
