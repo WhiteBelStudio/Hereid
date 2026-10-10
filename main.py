@@ -147,7 +147,7 @@ def init_db():
           goodbye_enabled INTEGER NOT NULL DEFAULT 0,
           goodbye_text TEXT NOT NULL DEFAULT 'До свидания, {name}!',
           reports_enabled INTEGER NOT NULL DEFAULT 1,
-          rules_text TEXT NOT NULL DEFAULT '1. Уважайте других участников.\\n2. Не размещайте спам.\\n3. Не публикуйте чужие личные данные.',
+          rules_text TEXT NOT NULL DEFAULT '1. Уважайте участников. | 2. Не размещайте спам. | 3. Не публикуйте чужие личные данные.',
           updated_by INTEGER,
           updated_at TEXT NOT NULL
         );
