@@ -230,6 +230,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_reprimands_chat_active ON reprimands(chat_id,active)",
             "CREATE INDEX IF NOT EXISTS idx_roles_chat_role ON role_assignments(chat_id,role)",
             "CREATE INDEX IF NOT EXISTS idx_rp_actions_chat_enabled ON rp_actions(chat_id,is_enabled)",
+            "CREATE INDEX IF NOT EXISTS idx_xp_profiles_chat_xp ON xp_profiles(chat_id,xp DESC)",
         )
         for statement in indexes:
             con.execute(statement)
@@ -1022,6 +1023,9 @@ COMMANDS = (
     "<code>админ меню</code> — открыть меню администратора.\n"
     "<code>помощь</code> — открыть эту справку.\n\n"
     "Поддерживаемые сроки: 30м — минуты, 2ч — часы, 7д — дни.\n"
+    "⭐ <code>/xp</code> — посмотреть свой опыт в текущей группе.\\n"
+    "🏆 <code>/topxp</code> — рейтинг XP участников группы.\\n"
+    "Опыт: +5 XP за подходящее сообщение, не чаще одного раза в 60 секунд.\\n\\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
 
