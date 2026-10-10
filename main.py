@@ -228,10 +228,10 @@ def role_overview(chat_id: int, viewer_id: int):
             ).fetchone()
         viewer_role = row["role"] if row else "admin"
     return (
-        "👑 <b>Управление ролями</b>\\n\\n"
-        f"Ваша роль: <b>{html.escape(ROLE_LABELS.get(viewer_role, 'Не определена'))}</b>\\n\\n"
+        "👑 <b>Управление ролями</b>\n\n"
+        f"Ваша роль: <b>{html.escape(ROLE_LABELS.get(viewer_role, 'Не определена'))}</b>\n\n"
         "Выберите роль для назначения сотруднику или снимите текущую роль. "
-        "После выбора бот попросит Telegram ID сотрудника.\\n\\n"
+        "После выбора бот попросит Telegram ID сотрудника.\n\n"
         "⚠️ Владелец задаётся через OWNER_TELEGRAM_ID и не может быть понижен через панель."
     )
 
@@ -505,6 +505,13 @@ async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
         return
     if message.chat.type != ChatType.PRIVATE:
+        if not await has_permission(message.chat.id, message.from_user.id, "manage_roles"):
+            await message.reply("⛔ Ваши права изменились. Операция с ролью отменена.")
+            with db() as con:
+                con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                            (message.chat.id, message.from_user.id))
+                con.commit()
+            return
         with db() as con:
             pending = con.execute(
                 "SELECT role FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
@@ -643,7 +650,7 @@ async def callbacks(callback: CallbackQuery):
             con.commit()
         action_label = "снятия роли" if selected_role == "__remove__" else "назначения роли «" + ROLE_LABELS[selected_role] + "»"
         await callback.message.edit_text(
-            f"👤 <b>Введите Telegram ID сотрудника для {html.escape(action_label)}</b>\\n\\n"
+            f"👤 <b>Введите Telegram ID сотрудника для {html.escape(action_label)}</b>\n\n"
             "Отправьте ID следующим сообщением в этот чат. Чтобы отменить операцию, отправьте «отмена».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="roles:cancel")],
@@ -670,7 +677,7 @@ async def callbacks(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
         ])
-        await callback.message.edit_text(f"<b>{title}</b>\\n\\n{description}", reply_markup=markup)
+        await callback.message.edit_text(f"<b>{title}</b>\n\n{description}", reply_markup=markup)
     elif key == "rules":
         await callback.message.edit_text(
             "⚖️ <b>Правила чата</b>\n\n1. Уважайте других участников.\n2. Не размещайте спам и не засоряйте чат сообщениями.\n3. Соблюдайте правила сообщества и законные требования администрации.\n4. Не публикуйте чужие личные данные.",
