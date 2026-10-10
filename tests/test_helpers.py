@@ -402,3 +402,38 @@ def test_xp_leaderboard_has_clean_unframed_layout(tmp_path, monkeypatch):
     assert "Bob" in text
     assert "XP" in text
     assert "┌" not in text and "┐" not in text
+
+
+
+def test_xp_level_thresholds_and_progress_bar_values():
+    assert main.xp_level(0) == 1
+    assert main.xp_level(99) == 1
+    assert main.xp_level(100) == 2
+    assert main.xp_level(9_899) == 99
+    assert main.xp_level(9_900) == 100
+    assert main.xp_level_progress(250) == {
+        "level": 3,
+        "current_xp": 50,
+        "needed_xp": 100,
+        "next_level_xp": 300,
+        "percent": 50,
+    }
+
+
+def test_level_up_announcement_only_on_level_change_and_milestones_are_special():
+    assert main.level_up_announcement(95, 99, "Alice") is None
+    ordinary = main.level_up_announcement(95, 100, "Alice")
+    assert ordinary is not None
+    assert "НОВЫЙ УРОВЕНЬ" in ordinary
+    assert "2-й уровень" in ordinary
+
+    milestone_100 = main.level_up_announcement(9_899, 9_900, "Alice")
+    milestone_200 = main.level_up_announcement(19_899, 19_900, "Bob")
+    milestone_1100 = main.level_up_announcement(109_899, 109_900, "Charlie")
+    assert "100-го уровня" in milestone_100
+    assert "200-го уровня" in milestone_200
+    assert "1100-го уровня" in milestone_1100
+    assert milestone_100 != milestone_200
+    assert milestone_200 != milestone_1100
+    assert "Али" not in milestone_100 or "Alice" in milestone_100
+    assert "<b>Alice</b>" in milestone_100
