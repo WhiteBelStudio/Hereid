@@ -1314,7 +1314,11 @@ async def router(message: Message):
         if await need_panel_access(message):
             await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
     elif any(word in text for word in ("жалоба", "апелляция", "поддержка", "помогите")):
-        await message.reply("📨 Опишите ситуацию и обратитесь к администрации чата. Не отправляйте пароли и коды входа.")
+        cfg = get_chat_settings(message.chat.id)
+        if cfg["reports_enabled"]:
+            await message.reply("📨 Опишите ситуацию и обратитесь к администрации чата. Не отправляйте пароли и коды входа.")
+        else:
+            await message.reply("📭 Приём обращений через бота временно отключён администрацией этого чата.")
 
 
 @dp.callback_query(F.data)
@@ -1770,7 +1774,13 @@ async def callbacks(callback: CallbackQuery):
             reply_markup=home_keyboard(),
         )
     elif key == "contact":
-        await callback.message.edit_text("📨 Опишите проблему и отправьте сообщение администрации чата. Не указывайте пароли и коды подтверждения.", reply_markup=home_keyboard())
+        cfg = get_chat_settings(callback.message.chat.id)
+        text = (
+            "📨 Опишите проблему и обратитесь к администрации чата. Не указывайте пароли и коды подтверждения."
+            if cfg["reports_enabled"]
+            else "📭 Приём обращений через бота временно отключён администрацией этого чата."
+        )
+        await callback.message.edit_text(text, reply_markup=home_keyboard())
     elif key == "help":
         await callback.message.edit_text(HELP, reply_markup=home_keyboard())
     else:
