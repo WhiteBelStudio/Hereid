@@ -176,6 +176,17 @@ def init_db():
           PRIMARY KEY(chat_id,user_id)
         );
         """)
+        # Repair legacy moderation tables in place before creating indexes that
+        # reference their columns. Existing rows remain active by default.
+        for table_name in ("warnings", "reprimands"):
+            table_columns = {
+                row[1] for row in con.execute(f"PRAGMA table_info({table_name})").fetchall()
+            }
+            if "active" not in table_columns:
+                con.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+                )
+
         # Add new columns in-place; never drop or recreate existing tables.
         rp_columns = {row[1] for row in con.execute("PRAGMA table_info(rp_actions)").fetchall()}
         if "is_enabled" not in rp_columns:
@@ -217,9 +228,14 @@ def init_db():
             (2, migration_time,
              "Add actions.reason to legacy databases without deleting action history"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (3, migration_time,
+             "Add missing warnings.active and reprimands.active columns to legacy databases"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 2:
-            con.execute("PRAGMA user_version=2")
+        if current_version < 3:
+            con.execute("PRAGMA user_version=3")
         con.commit()
 
 
