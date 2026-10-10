@@ -677,6 +677,103 @@ async def user_card(chat_id: int, target_id: int, can_moderate: bool):
     return "\n".join(lines), user_card_keyboard(target_id, can_moderate)
 
 
+
+def statistics_text(chat_id: int):
+    """Build chat-scoped statistics from persisted moderation and configuration data."""
+    now = datetime.now(timezone.utc)
+    day_ago = (now - timedelta(days=1)).isoformat(timespec="seconds")
+    with db() as con:
+        total_actions = con.execute("SELECT COUNT(*) AS n FROM actions WHERE chat_id=?", (chat_id,)).fetchone()["n"]
+        recent_actions = con.execute(
+            "SELECT COUNT(*) AS n FROM actions WHERE chat_id=? AND created_at>=?", (chat_id, day_ago)
+        ).fetchone()["n"]
+        warnings_active = con.execute("SELECT COUNT(*) AS n FROM warnings WHERE chat_id=? AND active=1", (chat_id,)).fetchone()["n"]
+        reprimands_active = con.execute("SELECT COUNT(*) AS n FROM reprimands WHERE chat_id=? AND active=1", (chat_id,)).fetchone()["n"]
+        roles = con.execute("SELECT role,COUNT(*) AS n FROM role_assignments WHERE chat_id=? GROUP BY role", (chat_id,)).fetchall()
+        rp = con.execute(
+            "SELECT COUNT(*) AS total,COALESCE(SUM(is_enabled),0) AS enabled FROM rp_actions WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+        top = con.execute(
+            "SELECT action,COUNT(*) AS n FROM actions WHERE chat_id=? GROUP BY action ORDER BY n DESC,action LIMIT 5",
+            (chat_id,),
+        ).fetchall()
+    role_counts = {row["role"]: row["n"] for row in roles}
+    lines = [
+        "📊 <b>Статистика чата</b>", "",
+        f"Всего записей в журнале: <b>{total_actions}</b>",
+        f"Действий за последние 24 часа: <b>{recent_actions}</b>",
+        f"Активных предупреждений: <b>{warnings_active}</b>",
+        f"Активных выговоров: <b>{reprimands_active}</b>", "",
+        "<b>Назначенные роли</b>",
+        f"Администраторы бота: <b>{role_counts.get('admin', 0)}</b>",
+        f"Модераторы: <b>{role_counts.get('moderator', 0)}</b>",
+        f"Помощники: <b>{role_counts.get('helper', 0)}</b>", "",
+        f"RP-действий: <b>{rp['total']}</b> (включено: <b>{rp['enabled']}</b>)", "",
+        "<b>Частые типы событий</b>",
+    ]
+    if top:
+        lines.extend(f"• {html.escape(row['action'])}: <b>{row['n']}</b>" for row in top)
+    else:
+        lines.append("Пока нет записей.")
+    lines.append(f"\\n<code>Обновлено: {now.strftime('%Y-%m-%d %H:%M UTC')}</code>")
+    return "\\n".join(lines)
+
+
+def statistics_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats")],
+        [InlineKeyboardButton(text="📜 Журнал действий", callback_data="panel:logs")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
+
+
+def action_log_page(chat_id: int, page: int = 0, page_size: int = 8):
+    """Return one chat-scoped page of persisted action records."""
+    page = max(0, int(page))
+    page_size = max(1, min(10, int(page_size)))
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) AS n FROM actions WHERE chat_id=?", (chat_id,)).fetchone()["n"]
+        max_page = max(0, (total - 1) // page_size)
+        page = min(page, max_page)
+        rows = con.execute(
+            "SELECT id,user_id,moderator_id,action,reason,created_at FROM actions WHERE chat_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (chat_id, page_size, page * page_size),
+        ).fetchall()
+    lines = [f"📜 <b>Журнал действий</b> — страница {page + 1}/{max_page + 1}", ""]
+    if not rows:
+        lines.append("В этом чате пока нет записей.")
+    for row in rows:
+        created = str(row["created_at"] or "").replace("T", " ")
+        if created.endswith("+00:00"):
+            created = created[:-6] + " UTC"
+        created = created[:19] or "время неизвестно"
+        actor = "автоматически" if row["moderator_id"] == 0 else str(row["moderator_id"])
+        target = "—" if row["user_id"] is None else str(row["user_id"])
+        action = html.escape(str(row["action"])[:80])
+        reason = html.escape(str(row["reason"] or "—")[:180])
+        lines.append(
+            f"<b>#{row['id']} · {html.escape(created)}</b>\\n"
+            f"Событие: <code>{action}</code>\\n"
+            f"Инициатор: <code>{html.escape(actor)}</code> · Цель: <code>{html.escape(target)}</code>\\n"
+            f"Детали: {reason}"
+        )
+    lines.append(f"\\nВсего записей: <b>{total}</b>")
+    buttons = []
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Новее", callback_data=f"logs:page:{page - 1}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="Старее ➡️", callback_data=f"logs:page:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.extend([
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"logs:page:{page}")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
+    return "\\n\\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def admin_keyboard():
     """Main navigation for the admin panel. Feature modules are connected in later checklist items."""
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1343,6 +1440,8 @@ async def callbacks(callback: CallbackQuery):
         "panel:logs": "view_logs",
     }
     required_permission = admin_permissions.get(key)
+    if key.startswith("logs:page:"):
+        required_permission = "view_logs"
     if key.startswith(("rp:item:", "rp:toggle:", "rp:edit:")):
         required_permission = "manage_actions"
     if key.startswith(("mod:toggle:", "mod:cycle:")):
@@ -1371,15 +1470,20 @@ async def callbacks(callback: CallbackQuery):
     elif key == "commands":
         await callback.message.edit_text(COMMANDS, reply_markup=admin_keyboard())
     elif key == "stats":
-        with db() as con:
-            row = con.execute(
-                "SELECT COUNT(*) AS n FROM actions WHERE chat_id=? AND moderator_id=?",
-                (callback.message.chat.id, callback.from_user.id),
-            ).fetchone()
         await callback.message.edit_text(
-            f"📊 <b>Ваша статистика</b>\nЗафиксировано действий: <b>{row['n']}</b>",
-            reply_markup=admin_keyboard(),
+            statistics_text(callback.message.chat.id),
+            reply_markup=statistics_keyboard(),
         )
+    elif key.startswith("logs:page:"):
+        try:
+            page = int(key.split(":")[2])
+            if page < 0:
+                raise ValueError
+        except (ValueError, IndexError):
+            await callback.answer("Некорректный номер страницы.", show_alert=True)
+            return
+        log_text, log_markup = action_log_page(callback.message.chat.id, page)
+        await callback.message.edit_text(log_text, reply_markup=log_markup)
     elif key.startswith("roles:grant:") or key == "roles:remove":
         selected_role = key.rsplit(":", 1)[-1] if key != "roles:remove" else "__remove__"
         if selected_role not in ("admin", "moderator", "helper", "__remove__"):
@@ -1532,9 +1636,14 @@ async def callbacks(callback: CallbackQuery):
             "panel:moderation": ("🛡️ Настройки модерации", moderation_settings_text(callback.message.chat.id)),
             "panel:roles": ("👑 Роли и права", role_overview(callback.message.chat.id, callback.from_user.id)),
             "panel:settings": ("⚙️ Настройки чата", chat_settings_text(callback.message.chat.id)),
-            "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
+            "panel:logs": ("📜 Журнал действий", ""),
         }
         title, description = sections[key]
+        if key == "panel:logs":
+            log_text, log_markup = action_log_page(callback.message.chat.id, 0)
+            await callback.message.edit_text(log_text, reply_markup=log_markup)
+            await callback.answer()
+            return
         if key == "panel:roles":
             markup = roles_keyboard()
         elif key == "panel:users":
