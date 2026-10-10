@@ -1045,6 +1045,104 @@ async def callbacks(callback: CallbackQuery):
                 [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
             ])
         await callback.message.edit_text(f"<b>{title}</b>\n\n{description}", reply_markup=markup)
+    elif key == "users:find":
+        with db() as con:
+            con.execute(
+                "INSERT INTO pending_user_actions(chat_id,admin_id,target_id,action,created_at) VALUES(?,?,NULL,'lookup',?) "
+                "ON CONFLICT(chat_id,admin_id) DO UPDATE SET target_id=NULL,action='lookup',created_at=excluded.created_at",
+                (callback.message.chat.id, callback.from_user.id,
+                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+            con.commit()
+        await callback.message.edit_text(
+            "🔎 <b>Поиск пользователя</b>\n\nОтправьте числовой Telegram ID участника этой группы. "
+            "Для отмены отправьте «отмена».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="users:cancel")],
+                [InlineKeyboardButton(text="⬅️ К пользователям", callback_data="panel:users")],
+            ]),
+        )
+    elif key == "users:cancel":
+        with db() as con:
+            con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                        (callback.message.chat.id, callback.from_user.id))
+            con.commit()
+        await callback.message.edit_text(
+            "👥 <b>Управление пользователями</b>\nВыберите действие.",
+            reply_markup=user_lookup_keyboard(),
+        )
+    elif key.startswith("users:card:"):
+        try:
+            target_id = int(key.split(":")[2])
+        except (ValueError, IndexError):
+            await callback.answer("Некорректный Telegram ID.", show_alert=True)
+            return
+        can_moderate = await has_permission(callback.message.chat.id, callback.from_user.id, "moderate")
+        card_text, card_markup = await user_card(callback.message.chat.id, target_id, can_moderate)
+        await callback.message.edit_text(card_text, reply_markup=card_markup)
+    elif key.startswith("users:action:"):
+        parts = key.split(":")
+        if len(parts) != 4 or parts[2] not in ("ban", "unban", "mute", "unmute", "warn"):
+            await callback.answer("Неизвестное действие.", show_alert=True)
+            return
+        action_name = parts[2]
+        try:
+            target_id = int(parts[3])
+        except ValueError:
+            await callback.answer("Некорректный Telegram ID.", show_alert=True)
+            return
+        try:
+            member = await bot.get_chat_member(callback.message.chat.id, target_id)
+        except TelegramAPIError:
+            await callback.answer("Не удалось проверить участника. Проверьте ID и доступность Telegram.", show_alert=True)
+            return
+        if member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
+            await callback.answer("Нельзя применять эти ограничения к создателю или администратору Telegram.", show_alert=True)
+            return
+        if action_name in ("unban", "unmute"):
+            try:
+                if action_name == "unban":
+                    await bot.unban_chat_member(callback.message.chat.id, target_id, only_if_banned=True)
+                    log_action(callback.message.chat.id, target_id, callback.from_user.id, "unban", "Снятие блокировки из карточки пользователя")
+                    result_text = "✅ Блокировка снята."
+                else:
+                    await bot.restrict_chat_member(
+                        callback.message.chat.id, target_id,
+                        permissions=ChatPermissions(can_send_messages=True, can_send_audios=True,
+                            can_send_documents=True, can_send_photos=True, can_send_videos=True,
+                            can_send_video_notes=True, can_send_voice_notes=True, can_send_polls=True,
+                            can_send_other_messages=True, can_add_web_page_previews=True,
+                            can_invite_users=True),
+                    )
+                    log_action(callback.message.chat.id, target_id, callback.from_user.id, "unmute", "Снятие мута из карточки пользователя")
+                    result_text = "✅ Ограничение на отправку сообщений снято."
+            except TelegramAPIError:
+                await callback.answer("Telegram не выполнил действие. Проверьте права бота и статус пользователя.", show_alert=True)
+                return
+            card_text, card_markup = await user_card(callback.message.chat.id, target_id, True)
+            await callback.message.edit_text(result_text + "\n\n" + card_text, reply_markup=card_markup)
+        else:
+            with db() as con:
+                con.execute(
+                    "INSERT INTO pending_user_actions(chat_id,admin_id,target_id,action,created_at) VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(chat_id,admin_id) DO UPDATE SET target_id=excluded.target_id,action=excluded.action,created_at=excluded.created_at",
+                    (callback.message.chat.id, callback.from_user.id, target_id, action_name,
+                     datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                )
+                con.commit()
+            prompts = {
+                "ban": "Отправьте срок и причину, например <code>7д спам</code>. Если срок не нужен, отправьте только причину — бан будет без срока.",
+                "mute": "Отправьте срок и причину, например <code>30м флуд</code>. Срок обязателен.",
+                "warn": "Отправьте причину предупреждения.",
+            }
+            await callback.message.edit_text(
+                f"📝 <b>Действие с пользователем #{target_id}</b>\n\n{prompts[action_name]}\n"
+                "Для отмены отправьте «отмена».",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Отмена", callback_data=f"users:card:{target_id}")],
+                    [InlineKeyboardButton(text="⬅️ К пользователям", callback_data="panel:users")],
+                ]),
+            )
     elif key == "rp:create":
         with db() as con:
             con.execute("DELETE FROM pending_rp_edits WHERE chat_id=? AND user_id=?",
