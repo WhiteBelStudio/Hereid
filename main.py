@@ -935,8 +935,11 @@ async def target_for(message, args):
 async def send_dm(user_id, text):
     try:
         await bot.send_message(user_id, text)
-    except TelegramAPIError:
-        pass
+    except TelegramAPIError as exc:
+        log.info("Could not send private notification to user_id=%s (%s).", user_id, type(exc).__name__)
+    except Exception as exc:
+        log.warning("Unexpected private notification failure for user_id=%s (%s).",
+                    user_id, type(exc).__name__)
 
 
 async def moderation(message, cmd, args):
@@ -980,6 +983,27 @@ async def moderation(message, cmd, args):
     uid, rest, error = await target_for(message, args)
     if uid is None:
         await message.reply(error)
+        return True
+
+    # Resolve the target before moderation actions. Never apply restrictions to
+    # the group creator or Telegram administrators, including command-based actions.
+    try:
+        target_member = await bot.get_chat_member(chat_id, uid)
+    except TelegramAPIError as exc:
+        log.warning("Moderation target lookup failed in chat_id=%s user_id=%s (%s).",
+                    chat_id, uid, type(exc).__name__)
+        await message.reply("⚠️ Не удалось проверить участника. Проверьте Telegram ID и права бота.")
+        return True
+    except Exception as exc:
+        log.warning("Unexpected moderation target lookup failure in chat_id=%s user_id=%s (%s).",
+                    chat_id, uid, type(exc).__name__)
+        await message.reply("⚠️ Ошибка соединения при проверке участника. Попробуйте позже.")
+        return True
+
+    if action in ("ban", "mute", "unmute") and target_member.status in (
+        ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR
+    ):
+        await message.reply("⛔ Нельзя применять ограничения к создателю или администратору Telegram.")
         return True
 
     if action in ("warn", "reprimand"):
@@ -1204,8 +1228,15 @@ async def router(message: Message):
                 return
             try:
                 target_member = await bot.get_chat_member(message.chat.id, target_id)
-            except TelegramAPIError:
+            except TelegramAPIError as exc:
+                log.warning("Pending user action target lookup failed in chat_id=%s user_id=%s (%s).",
+                            message.chat.id, target_id, type(exc).__name__)
                 await message.reply("Не удалось проверить участника. Откройте карточку и попробуйте снова.")
+                return
+            except Exception as exc:
+                log.warning("Unexpected pending user action lookup failure in chat_id=%s user_id=%s (%s).",
+                            message.chat.id, target_id, type(exc).__name__)
+                await message.reply("Ошибка соединения при проверке участника. Попробуйте позже.")
                 return
             if target_member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
                 with db() as con:
