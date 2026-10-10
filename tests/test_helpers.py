@@ -200,6 +200,41 @@ def test_legacy_actions_table_gets_reason_column_without_losing_history(tmp_path
     ]
     assert version >= 2
 
+def test_log_action_supports_legacy_required_details_column(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy_actions_details.sqlite3"
+    monkeypatch.setattr(main, "DB_PATH", str(db_path))
+
+    # Existing Pterodactyl databases may have a NOT NULL details column.
+    with sqlite3.connect(db_path) as con:
+        con.execute("""
+            CREATE TABLE actions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER,
+                moderator_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+    main.init_db()
+    main.log_action(-100999, 123, 456, "mute", "test moderation reason")
+
+    with main.db() as con:
+        row = con.execute(
+            "SELECT action,reason,details FROM actions WHERE chat_id=?",
+            (-100999,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["action"] == "mute"
+    assert row["reason"] == "test moderation reason"
+    assert row["details"] == "test moderation reason"
+
+
 def test_chat_settings_defaults_and_updates_persist(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "settings.sqlite3"))
     main.init_db()
