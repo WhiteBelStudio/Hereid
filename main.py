@@ -216,7 +216,7 @@ def role_overview(chat_id: int, viewer_id: int):
     lines.extend(f"• {label}" for label in ROLE_LABELS.values())
     lines.extend(["", f"Ваша назначенная роль: <b>{html.escape(ROLE_LABELS.get(viewer_role, 'Не определена'))}</b>",
                   "", "Назначение и снятие ролей будет добавлено в пункте 004."])
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def admin_keyboard():
