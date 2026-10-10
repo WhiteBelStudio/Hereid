@@ -94,6 +94,23 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(chat_id, admin_id)
         );
+        CREATE TABLE IF NOT EXISTS rp_actions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          keywords TEXT NOT NULL,
+          response TEXT NOT NULL,
+          created_by INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(chat_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS pending_panel_inputs(
+          chat_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('rp_create')),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id, user_id)
+        );
         """)
         con.commit()
 
@@ -244,6 +261,34 @@ def roles_keyboard():
         [InlineKeyboardButton(text="➖ Снять роль", callback_data="roles:remove")],
         [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
     ])
+
+
+def rp_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать RP-действие", callback_data="rp:create")],
+        [InlineKeyboardButton(text="🔄 Обновить список", callback_data="panel:rp")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
+
+
+def rp_catalog(chat_id: int):
+    with db() as con:
+        rows = con.execute(
+            "SELECT id,name,keywords,response FROM rp_actions WHERE chat_id=? ORDER BY id DESC LIMIT 30",
+            (chat_id,),
+        ).fetchall()
+    if not rows:
+        return "🎭 <b>Каталог RP-действий</b>\\n\\nПока нет действий. Нажмите «Создать RP-действие»."
+    lines = ["🎭 <b>Каталог RP-действий</b>", ""]
+    for row in rows:
+        words = ", ".join(x.strip() for x in row["keywords"].split(",") if x.strip())
+        lines.append(
+            f"<b>#{row['id']} · {html.escape(row['name'])}</b>\\n"
+            f"Ключевые слова: <code>{html.escape(words)}</code>\\n"
+            f"Ответ: {html.escape(row['response'][:180])}"
+        )
+    lines.append("\\nДля каждого действия можно задать несколько ключевых слов.")
+    return "\\n\\n".join(lines)
 
 
 def admin_keyboard():
@@ -505,19 +550,19 @@ async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
         return
     if message.chat.type != ChatType.PRIVATE:
-        if not await has_permission(message.chat.id, message.from_user.id, "manage_roles"):
-            await message.reply("⛔ Ваши права изменились. Операция с ролью отменена.")
-            with db() as con:
-                con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
-                            (message.chat.id, message.from_user.id))
-                con.commit()
-            return
         with db() as con:
             pending = con.execute(
                 "SELECT role FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
                 (message.chat.id, message.from_user.id),
             ).fetchone()
         if pending:
+            if not await has_permission(message.chat.id, message.from_user.id, "manage_roles"):
+                await message.reply("⛔ Ваши права изменились. Операция с ролью отменена.")
+                with db() as con:
+                    con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                return
             value = message.text.strip()
             if value.lower() == "отмена":
                 with db() as con:
@@ -575,6 +620,73 @@ async def router(message: Message):
             )
             return
 
+    if message.chat.type != ChatType.PRIVATE:
+        with db() as con:
+            pending_rp = con.execute(
+                "SELECT kind FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+                (message.chat.id, message.from_user.id),
+            ).fetchone()
+        if pending_rp:
+            if not await has_permission(message.chat.id, message.from_user.id, "manage_actions"):
+                with db() as con:
+                    con.execute("DELETE FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("⛔ Ваши права изменились. Создание действия отменено.")
+                return
+            value = message.text.strip()
+            if value.lower() == "отмена":
+                with db() as con:
+                    con.execute("DELETE FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("❌ Создание RP-действия отменено.")
+                return
+            parts = [part.strip() for part in value.split("|", 2)]
+            if len(parts) != 3 or not all(parts):
+                await message.reply("Неверный формат. Используйте: <code>Название | ключ1, ключ2 | Ответ бота</code> или отправьте «отмена».")
+                return
+            name, raw_keywords, response = parts
+            keywords = [word.strip().lower() for word in raw_keywords.split(",") if word.strip()]
+            if not keywords or len(name) > 80 or len(response) > 1000 or any(len(word) > 60 for word in keywords):
+                await message.reply("Проверьте данные: название до 80 символов, ключевое слово до 60, ответ до 1000; нужен минимум один ключ.")
+                return
+            if len(set(keywords)) != len(keywords):
+                keywords = list(dict.fromkeys(keywords))
+            with db() as con:
+                try:
+                    cur = con.execute(
+                        "INSERT INTO rp_actions(chat_id,name,keywords,response,created_by,created_at) VALUES(?,?,?,?,?,?)",
+                        (message.chat.id, name, ", ".join(keywords), response, message.from_user.id,
+                         datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                    )
+                except sqlite3.IntegrityError:
+                    await message.reply("Действие с таким названием уже существует в этом чате. Выберите другое название.")
+                    return
+                action_id = cur.lastrowid
+                con.execute("DELETE FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+                            (message.chat.id, message.from_user.id))
+                con.commit()
+            log_action(message.chat.id, None, message.from_user.id, "rp_action_created", f"#{action_id}: {name}")
+            await message.reply(f"✅ RP-действие «{html.escape(name)}» создано. Ключевых слов: {len(keywords)}.")
+            return
+
+        # Exact keyword matches only; ordinary messages otherwise pass through unchanged.
+        if not message.text.startswith("/"):
+            normalized = " ".join(message.text.casefold().split())
+            with db() as con:
+                rows = con.execute(
+                    "SELECT name,keywords,response FROM rp_actions WHERE chat_id=? ORDER BY id DESC",
+                    (message.chat.id,),
+                ).fetchall()
+            for row in rows:
+                if any(normalized == " ".join(word.casefold().split())
+                       for word in row["keywords"].split(",") if word.strip()):
+                    await message.reply(
+                        f"<b>{html.escape(row['name'])}</b>\\n{html.escape(row['response'])}"
+                    )
+                    return
+
     cmd, args = parse(message.text)
     handled = await moderation(message, cmd, args)
     if handled:
@@ -599,6 +711,7 @@ async def callbacks(callback: CallbackQuery):
         "roles:grant:helper": "manage_roles",
         "roles:remove": "manage_roles",
         "roles:cancel": "manage_roles",
+        "rp:create": "manage_actions",
         "commands": "panel",
         "stats": "view_stats",
         "panel:users": "panel",
@@ -670,18 +783,49 @@ async def callbacks(callback: CallbackQuery):
     elif key.startswith("panel:"):
         sections = {
             "panel:users": ("👥 Управление пользователями", "Здесь будут карточки пользователей, история взысканий и быстрые действия. Подключение — в пунктах 007 и 011."),
-            "panel:rp": ("🎭 RP-действия", "Здесь будет каталог RP-действий и управление ключевыми словами. Подключение — в пунктах 005 и 006."),
+            "panel:rp": ( "🎭 RP-действия", rp_catalog(callback.message.chat.id)),
             "panel:moderation": ("🛡️ Настройки модерации", "Здесь появятся параметры модерации и антиспама. Подключение — в пункте 008."),
             "panel:roles": ("👑 Роли и права", role_overview(callback.message.chat.id, callback.from_user.id)),
             "panel:settings": ("⚙️ Настройки чата", "Здесь появятся настройки панели для этого чата. Подключение — в пункте 009."),
             "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
         }
         title, description = sections[key]
-        markup = roles_keyboard() if key == "panel:roles" else InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
-        ])
+        if key == "panel:roles":
+            markup = roles_keyboard()
+        elif key == "panel:rp":
+            markup = rp_keyboard()
+        else:
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+            ])
         await callback.message.edit_text(f"<b>{title}</b>\n\n{description}", reply_markup=markup)
+    elif key == "rp:create":
+        with db() as con:
+            con.execute(
+                "INSERT INTO pending_panel_inputs(chat_id,user_id,kind,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(chat_id,user_id) DO UPDATE SET kind=excluded.kind,created_at=excluded.created_at",
+                (callback.message.chat.id, callback.from_user.id, "rp_create",
+                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+            con.commit()
+        await callback.message.edit_text(
+            "➕ <b>Создание RP-действия</b>\\n\\n"
+            "Отправьте одной строкой в формате:\\n"
+            "<code>Название | ключ1, ключ2 | Ответ бота</code>\\n\\n"
+            "Пример: <code>Приветствие | привет, здарова | *кивает и приветствует*</code>\\n"
+            "Ключевые слова должны быть короткими фразами. Отмена: «отмена».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="rp:cancel")],
+                [InlineKeyboardButton(text="⬅️ В каталог", callback_data="panel:rp")],
+            ]),
+        )
+    elif key == "rp:cancel":
+        with db() as con:
+            con.execute("DELETE FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+                        (callback.message.chat.id, callback.from_user.id))
+            con.commit()
+        await callback.message.edit_text(rp_catalog(callback.message.chat.id), reply_markup=rp_keyboard())
     elif key == "rules":
         await callback.message.edit_text(
             "⚖️ <b>Правила чата</b>\n\n1. Уважайте других участников.\n2. Не размещайте спам и не засоряйте чат сообщениями.\n3. Соблюдайте правила сообщества и законные требования администрации.\n4. Не публикуйте чужие личные данные.",
