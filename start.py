@@ -4,12 +4,47 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent
     os.chdir(root)
+
+    # Keep the deployed bot code aligned with the repository without touching
+    # .env or the SQLite database. If GitHub is temporarily unavailable, use
+    # the already-installed local main.py and report a non-secret warning.
+    auto_update = os.getenv("AUTO_UPDATE_MAIN", "1").strip().lower() not in {"0", "false", "no"}
+    main_file = root / "main.py"
+    if auto_update:
+        source_url = "https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main/main.py"
+        try:
+            request = urllib.request.Request(
+                source_url,
+                headers={"User-Agent": "heradeLegend-Pterodactyl-Updater"},
+            )
+            with urllib.request.urlopen(request, timeout=12) as response:
+                latest_code = response.read()
+            if not latest_code or b"async def main" not in latest_code:
+                raise ValueError("downloaded main.py failed basic validation")
+            temporary_file = root / "main.py.update"
+            temporary_file.write_bytes(latest_code)
+            temporary_file.replace(main_file)
+            print("[startup] Updated main.py from the configured GitHub repository.")
+        except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+            if not main_file.is_file():
+                print(
+                    f"FATAL: could not download main.py and no local copy exists ({type(exc).__name__}).",
+                    file=sys.stderr,
+                )
+                return 2
+            print(
+                f"[startup] WARNING: could not update main.py ({type(exc).__name__}); "
+                "using the existing local copy.",
+                file=sys.stderr,
+            )
 
     requirements = root / "requirements.txt"
     if not requirements.is_file():
