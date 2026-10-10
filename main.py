@@ -83,6 +83,18 @@ def init_db():
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
         con.executescript("""
+        CREATE TABLE IF NOT EXISTS xp_profiles(
+          chat_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          xp INTEGER NOT NULL DEFAULT 0 CHECK(xp >= 0),
+          eligible_messages INTEGER NOT NULL DEFAULT 0 CHECK(eligible_messages >= 0),
+          last_awarded_at REAL NOT NULL DEFAULT 0,
+          display_name TEXT NOT NULL DEFAULT '',
+          username TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id,user_id)
+        );
         CREATE TABLE IF NOT EXISTS warnings(
           id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
           user_id INTEGER NOT NULL, moderator_id INTEGER NOT NULL,
@@ -243,10 +255,80 @@ def init_db():
             (4, migration_time,
              "Ensure actions.details exists for legacy moderation databases"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (5, migration_time,
+             "Add persistent chat-scoped XP profiles without deleting existing data"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 4:
-            con.execute("PRAGMA user_version=4")
+        if current_version < 5:
+            con.execute("PRAGMA user_version=5")
         con.commit()
+
+
+
+XP_PER_MESSAGE = 5
+XP_COOLDOWN_SECONDS = 60
+
+
+def award_message_xp(chat_id: int, user_id: int, display_name: str, username: str = "") -> bool:
+    """Award XP for eligible chat activity at most once per cooldown window."""
+    now = time.time()
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db() as con:
+        cursor = con.execute(
+            """
+            INSERT INTO xp_profiles(
+                chat_id,user_id,xp,eligible_messages,last_awarded_at,
+                display_name,username,created_at,updated_at
+            ) VALUES(?,?,?,1,?,?,?,?,?)
+            ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                xp=xp_profiles.xp+excluded.xp,
+                eligible_messages=xp_profiles.eligible_messages+1,
+                last_awarded_at=excluded.last_awarded_at,
+                display_name=excluded.display_name,
+                username=excluded.username,
+                updated_at=excluded.updated_at
+            WHERE xp_profiles.last_awarded_at <= ?
+            """,
+            (
+                chat_id, user_id, XP_PER_MESSAGE, now, display_name[:128],
+                username[:64], timestamp, timestamp, now - XP_COOLDOWN_SECONDS,
+            ),
+        )
+        return cursor.rowcount > 0
+
+
+def get_xp_profile(chat_id: int, user_id: int):
+    with db() as con:
+        row = con.execute(
+            "SELECT xp,eligible_messages,display_name,username FROM xp_profiles WHERE chat_id=? AND user_id=?",
+            (chat_id, user_id),
+        ).fetchone()
+    return dict(row) if row else {
+        "xp": 0, "eligible_messages": 0, "display_name": "", "username": ""
+    }
+
+
+def xp_leaderboard_text(chat_id: int, limit: int = 10) -> str:
+    limit = max(1, min(10, int(limit)))
+    with db() as con:
+        rows = con.execute(
+            "SELECT user_id,xp,display_name,username FROM xp_profiles "
+            "WHERE chat_id=? AND xp>0 ORDER BY xp DESC,user_id ASC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+    if not rows:
+        return "🏆 <b>Рейтинг XP</b>\n\nПока никто не набрал опыт. Общайтесь в чате, чтобы попасть в рейтинг."
+    medals = ("🥇", "🥈", "🥉")
+    lines = ["🏆 <b>Рейтинг XP</b>", ""]
+    for index, row in enumerate(rows):
+        name = row["display_name"] or ("@" + row["username"] if row["username"] else f"Участник {row['user_id']}")
+        marker = medals[index] if index < len(medals) else f"{index + 1}."
+        username = f" (@{html.escape(row['username'])})" if row["username"] else ""
+        lines.append(f"{marker} <b>{html.escape(name)}</b>{username} — ⭐ <b>{row['xp']} XP</b>")
+    lines.append("\n💬 Опыт начисляется за активность с ограничением от спама.")
+    return "\n".join(lines)
 
 
 
@@ -1199,6 +1281,33 @@ async def admin_command(message: Message):
         await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
 
 
+@dp.message(Command("xp"))
+async def xp_command(message: Message):
+    if not message.from_user:
+        return
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("⭐ XP работает внутри группового чата. Откройте профиль в группе, где включён бот.")
+        return
+    profile = get_xp_profile(message.chat.id, message.from_user.id)
+    display_name = html.escape(message.from_user.full_name or "Участник")
+    username = f" (@{html.escape(message.from_user.username)})" if message.from_user.username else ""
+    await message.answer(
+        "✨ <b>ТВОЙ ОПЫТ</b>\n\n"
+        f"👤 <b>{display_name}</b>{username}\n"
+        f"⭐ <b>{profile['xp']} XP</b>\n"
+        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\n\n"
+        "Пиши по делу и участвуй в жизни чата — опыт начисляется постепенно."
+    )
+
+
+@dp.message(Command("topxp"))
+async def top_xp_command(message: Message):
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("🏆 Рейтинг XP доступен в групповом чате.")
+        return
+    await message.answer(xp_leaderboard_text(message.chat.id))
+
+
 @dp.message(F.text)
 async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
@@ -1244,6 +1353,22 @@ async def router(message: Message):
             return
     if await apply_automatic_moderation(message):
         return
+    # XP is earned only for ordinary group text, never for commands or bot messages.
+    if (
+        message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+        and not message.text.startswith("/")
+        and len(message.text.strip()) >= 3
+        and not is_control_message(message.text)
+    ):
+        try:
+            award_message_xp(
+                message.chat.id, message.from_user.id,
+                message.from_user.full_name or "Участник",
+                message.from_user.username or "",
+            )
+        except sqlite3.Error as exc:
+            log.warning("XP award failed in chat_id=%s user_id=%s (%s)",
+                        message.chat.id, message.from_user.id, type(exc).__name__)
     if message.chat.type != ChatType.PRIVATE:
         with db() as con:
             pending_user = con.execute(
