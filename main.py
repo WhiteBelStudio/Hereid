@@ -197,6 +197,11 @@ def init_db():
         action_columns = {row[1] for row in con.execute("PRAGMA table_info(actions)").fetchall()}
         if "reason" not in action_columns:
             con.execute("ALTER TABLE actions ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+            action_columns.add("reason")
+        # The actions table on some existing servers also requires details.
+        # Ensure every supported schema has it before moderation handlers run.
+        if "details" not in action_columns:
+            con.execute("ALTER TABLE actions ADD COLUMN details TEXT NOT NULL DEFAULT ''")
 
         # Versioned, idempotent schema tracking for future safe migrations.
         con.execute("""
@@ -233,9 +238,14 @@ def init_db():
             (3, migration_time,
              "Add missing warnings.active and reprimands.active columns to legacy databases"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (4, migration_time,
+             "Ensure actions.details exists for legacy moderation databases"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 3:
-            con.execute("PRAGMA user_version=3")
+        if current_version < 4:
+            con.execute("PRAGMA user_version=4")
         con.commit()
 
 
@@ -458,15 +468,12 @@ def log_action(chat_id, user_id, moderator_id, action, reason):
         columns = {
             row["name"] for row in con.execute("PRAGMA table_info(actions)").fetchall()
         }
-        fields = ["chat_id", "user_id", "moderator_id", "action", "reason", "created_at"]
+        # init_db() guarantees both columns exist, including on legacy databases.
+        fields = ["chat_id", "user_id", "moderator_id", "action", "reason", "details", "created_at"]
         values = [
-            chat_id, user_id, moderator_id, action, reason or "",
+            chat_id, user_id, moderator_id, action, reason or "", reason or "",
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
         ]
-        # Some deployed databases still require a NOT NULL details column.
-        if "details" in columns:
-            fields.append("details")
-            values.append(reason or "")
 
         placeholders = ",".join("?" for _ in fields)
         con.execute(
