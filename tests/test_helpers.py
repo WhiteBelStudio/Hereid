@@ -104,6 +104,48 @@ def test_legacy_actions_table_gets_reason_column_without_data_loss(tmp_path, mon
     assert 2 in migrations
 
 
+
+def test_legacy_actions_table_gets_reason_column_without_losing_history(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy.sqlite3"
+    monkeypatch.setattr(main, "DB_PATH", str(db_path))
+
+    # Simulate an older deployed database whose actions table predates reason.
+    with sqlite3.connect(db_path) as con:
+        con.execute("""
+            CREATE TABLE actions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER,
+                moderator_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        con.execute(
+            "INSERT INTO actions(chat_id,user_id,moderator_id,action,created_at) VALUES(?,?,?,?,?)",
+            (-100555, 456, 789, "old_action", "2026-10-01T12:00:00+00:00"),
+        )
+
+    main.init_db()
+    main.log_action(-100555, 999, 789, "new_action", "new reason")
+
+    with main.db() as con:
+        columns = {row["name"] for row in con.execute("PRAGMA table_info(actions)")}
+        rows = con.execute(
+            "SELECT action,reason FROM actions WHERE chat_id=? ORDER BY id",
+            (-100555,),
+        ).fetchall()
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+
+    assert "reason" in columns
+    assert [(row["action"], row["reason"]) for row in rows] == [
+        ("old_action", ""),
+        ("new_action", "new reason"),
+    ]
+    assert version >= 2
+
 def test_chat_settings_defaults_and_updates_persist(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "settings.sqlite3"))
     main.init_db()
