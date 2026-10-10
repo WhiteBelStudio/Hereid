@@ -985,26 +985,25 @@ async def moderation(message, cmd, args):
         await message.reply(error)
         return True
 
-    # Resolve the target before moderation actions. Never apply restrictions to
-    # the group creator or Telegram administrators, including command-based actions.
-    try:
-        target_member = await bot.get_chat_member(chat_id, uid)
-    except TelegramAPIError as exc:
-        log.warning("Moderation target lookup failed in chat_id=%s user_id=%s (%s).",
-                    chat_id, uid, type(exc).__name__)
-        await message.reply("⚠️ Не удалось проверить участника. Проверьте Telegram ID и права бота.")
-        return True
-    except Exception as exc:
-        log.warning("Unexpected moderation target lookup failure in chat_id=%s user_id=%s (%s).",
-                    chat_id, uid, type(exc).__name__)
-        await message.reply("⚠️ Ошибка соединения при проверке участника. Попробуйте позже.")
-        return True
+    # Resolve targets before actions that change Telegram restrictions. Historical
+    # warning/reprimand queries remain available for users who have left the chat.
+    if action in ("ban", "mute", "unmute"):
+        try:
+            target_member = await bot.get_chat_member(chat_id, uid)
+        except TelegramAPIError as exc:
+            log.warning("Moderation target lookup failed in chat_id=%s user_id=%s (%s).",
+                        chat_id, uid, type(exc).__name__)
+            await message.reply("⚠️ Не удалось проверить участника. Проверьте Telegram ID и права бота.")
+            return True
+        except Exception as exc:
+            log.warning("Unexpected moderation target lookup failure in chat_id=%s user_id=%s (%s).",
+                        chat_id, uid, type(exc).__name__)
+            await message.reply("⚠️ Ошибка соединения при проверке участника. Попробуйте позже.")
+            return True
 
-    if action in ("ban", "mute", "unmute") and target_member.status in (
-        ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR
-    ):
-        await message.reply("⛔ Нельзя применять ограничения к создателю или администратору Telegram.")
-        return True
+        if target_member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
+            await message.reply("⛔ Нельзя применять ограничения к создателю или администратору Telegram.")
+            return True
 
     if action in ("warn", "reprimand"):
         reason = " ".join(rest).strip()
