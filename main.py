@@ -113,6 +113,14 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(chat_id, user_id)
         );
+        CREATE TABLE IF NOT EXISTS pending_user_actions(
+          chat_id INTEGER NOT NULL,
+          admin_id INTEGER NOT NULL,
+          target_id INTEGER,
+          action TEXT NOT NULL CHECK(action IN ('lookup','ban','mute','warn')),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id, admin_id)
+        );
         CREATE TABLE IF NOT EXISTS pending_panel_inputs(
           chat_id INTEGER NOT NULL,
           user_id INTEGER NOT NULL,
@@ -357,6 +365,86 @@ def rp_item_keyboard(action_id: int, is_enabled: bool):
         [InlineKeyboardButton(text="💬 Изменить ответ", callback_data=f"rp:edit:{action_id}:response")],
         [InlineKeyboardButton(text="⬅️ В каталог", callback_data="panel:rp")],
     ])
+
+
+def user_lookup_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Найти по Telegram ID", callback_data="users:find")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
+
+
+def user_card_keyboard(target_id: int, can_moderate: bool):
+    rows = []
+    if can_moderate:
+        rows.extend([
+            [InlineKeyboardButton(text="⚠️ Выдать предупреждение", callback_data=f"users:action:warn:{target_id}")],
+            [
+                InlineKeyboardButton(text="🔨 Мут", callback_data=f"users:action:mute:{target_id}"),
+                InlineKeyboardButton(text="🔓 Снять мут", callback_data=f"users:action:unmute:{target_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="⛔ Бан", callback_data=f"users:action:ban:{target_id}"),
+                InlineKeyboardButton(text="♻️ Разбан", callback_data=f"users:action:unban:{target_id}"),
+            ],
+        ])
+    rows.extend([
+        [InlineKeyboardButton(text="🔄 Обновить карточку", callback_data=f"users:card:{target_id}")],
+        [InlineKeyboardButton(text="⬅️ К пользователям", callback_data="panel:users")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def user_card(chat_id: int, target_id: int, can_moderate: bool):
+    try:
+        member = await bot.get_chat_member(chat_id, target_id)
+        status_map = {
+            ChatMemberStatus.CREATOR: "создатель чата",
+            ChatMemberStatus.ADMINISTRATOR: "администратор Telegram",
+            ChatMemberStatus.MEMBER: "участник",
+            ChatMemberStatus.RESTRICTED: "ограничен",
+            ChatMemberStatus.LEFT: "вышел из чата",
+            ChatMemberStatus.KICKED: "заблокирован в чате",
+        }
+        status = status_map.get(member.status, str(member.status))
+        user = member.user
+        full_name = html.escape(" ".join(x for x in (user.first_name, user.last_name) if x) or "Без имени")
+        username = f"@{html.escape(user.username)}" if user.username else "не указан"
+    except TelegramAPIError:
+        return (
+            "⚠️ Не удалось получить карточку участника. Проверьте Telegram ID, права бота и доступность Telegram API.",
+            user_lookup_keyboard(),
+        )
+    with db() as con:
+        warnings = con.execute("SELECT COUNT(*) AS n FROM warnings WHERE chat_id=? AND user_id=? AND active=1",
+                               (chat_id, target_id)).fetchone()["n"]
+        reprimands = con.execute("SELECT COUNT(*) AS n FROM reprimands WHERE chat_id=? AND user_id=? AND active=1",
+                                 (chat_id, target_id)).fetchone()["n"]
+        role = con.execute("SELECT role FROM role_assignments WHERE chat_id=? AND user_id=?",
+                           (chat_id, target_id)).fetchone()
+        recent = con.execute("SELECT action,reason,created_at FROM actions WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 5",
+                             (chat_id, target_id)).fetchall()
+    role_label = ROLE_LABELS.get(role["role"], "не назначена") if role else "не назначена"
+    lines = [
+        "👤 <b>Карточка пользователя</b>",
+        f"Имя: <b>{full_name}</b>",
+        f"Telegram ID: <code>{target_id}</code>",
+        f"Username: {username}",
+        f"Статус в чате: <b>{html.escape(status)}</b>",
+        f"Внутренняя роль: {html.escape(role_label)}",
+        f"Активные предупреждения: <b>{warnings}</b>",
+        f"Активные выговоры: <b>{reprimands}</b>",
+    ]
+    if recent:
+        lines.append("\n<b>Последние действия:</b>")
+        for item in recent:
+            lines.append(f"• {html.escape(item['action'])}: {html.escape(item['reason'][:100])} ({html.escape(item['created_at'][:10])})")
+    else:
+        lines.append("\nПоследних записей в журнале нет.")
+    if member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
+        lines.append("\nℹ️ Ограничения для администраторов Telegram из этой карточки недоступны.")
+        can_moderate = False
+    return "\n".join(lines), user_card_keyboard(target_id, can_moderate)
 
 
 def admin_keyboard():
@@ -870,6 +958,10 @@ async def callbacks(callback: CallbackQuery):
     required_permission = admin_permissions.get(key)
     if key.startswith(("rp:item:", "rp:toggle:", "rp:edit:")):
         required_permission = "manage_actions"
+    if key.startswith("users:action:"):
+        required_permission = "moderate"
+    elif key.startswith("users:card:"):
+        required_permission = "panel"
     if required_permission:
         if not callback.message or not await has_permission(
             callback.message.chat.id, callback.from_user.id, required_permission
@@ -930,7 +1022,7 @@ async def callbacks(callback: CallbackQuery):
         await callback.message.edit_text("Операция отменена.", reply_markup=roles_keyboard())
     elif key.startswith("panel:"):
         sections = {
-            "panel:users": ("👥 Управление пользователями", "Здесь будут карточки пользователей, история взысканий и быстрые действия. Подключение — в пунктах 007 и 011."),
+            "panel:users": ("👥 Управление пользователями", "Найдите участника по Telegram ID, посмотрите статус, активные взыскания и последние действия."),
             "panel:rp": ( "🎭 RP-действия", rp_catalog(callback.message.chat.id)),
             "panel:moderation": ("🛡️ Настройки модерации", "Здесь появятся параметры модерации и антиспама. Подключение — в пункте 008."),
             "panel:roles": ("👑 Роли и права", role_overview(callback.message.chat.id, callback.from_user.id)),
@@ -940,6 +1032,8 @@ async def callbacks(callback: CallbackQuery):
         title, description = sections[key]
         if key == "panel:roles":
             markup = roles_keyboard()
+        elif key == "panel:users":
+            markup = user_lookup_keyboard()
         elif key == "panel:rp":
             can_manage_actions = await has_permission(
                 callback.message.chat.id, callback.from_user.id, "manage_actions"
