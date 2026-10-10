@@ -476,12 +476,16 @@ async def main():
         me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
         log.info("Connected to Telegram as @%s (id=%s)", me.username, me.id)
         await dp.start_polling(bot)
-    except TelegramNetworkError:
-        log.exception(
-            "Cannot reach Telegram Bot API. Check server outbound access, "
-            "proxy type/credentials, and TELEGRAM_PROXY."
+    except TelegramNetworkError as exc:
+        # Do not dump a long connector traceback for a known startup connectivity failure.
+        # The bot cannot run until Telegram Bot API is reachable.
+        log.error(
+            "Startup connection to Telegram Bot API failed (%s). "
+            "Check that TELEGRAM_PROXY is a reachable SOCKS5/HTTP proxy and that it "
+            "can connect to api.telegram.org:443. The bot was not started.",
+            type(exc).__name__,
         )
-        raise
+        raise SystemExit(1) from None
     finally:
         await bot.session.close()
 
