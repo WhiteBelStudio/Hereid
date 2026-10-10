@@ -65,6 +65,7 @@ def db():
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA synchronous=NORMAL")
     try:
         yield con
         con.commit()
