@@ -205,7 +205,9 @@ def init_db():
             (1, datetime.now(timezone.utc).isoformat(timespec="seconds"),
              "Initial versioned schema, persistent per-chat settings, and query indexes"),
         )
-        con.execute("PRAGMA user_version=1")
+        current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
+        if current_version < 1:
+            con.execute("PRAGMA user_version=1")
         con.commit()
 
 
