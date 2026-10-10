@@ -25,6 +25,20 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", "heradelegend.db")
 PROXY_URL = os.getenv("TELEGRAM_PROXY", "").strip() or None
 REQUEST_TIMEOUT = float(os.getenv("TELEGRAM_REQUEST_TIMEOUT", "60"))
+OWNER_TELEGRAM_ID = os.getenv("OWNER_TELEGRAM_ID", "").strip()
+
+ROLE_LABELS = {
+    "owner": "👑 Владелец",
+    "admin": "🛡️ Администратор",
+    "moderator": "🔨 Модератор",
+    "helper": "🤝 Помощник",
+}
+ROLE_PERMISSIONS = {
+    "owner": frozenset({"panel", "manage_roles", "manage_settings", "manage_actions", "moderate", "view_logs", "view_stats"}),
+    "admin": frozenset({"panel", "manage_roles", "manage_settings", "manage_actions", "moderate", "view_logs", "view_stats"}),
+    "moderator": frozenset({"panel", "moderate", "view_logs", "view_stats"}),
+    "helper": frozenset({"panel", "view_stats"}),
+}
 
 if not TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN в переменных сервера Pterodactyl.")
@@ -64,6 +78,14 @@ def init_db():
           id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
           user_id INTEGER, moderator_id INTEGER NOT NULL, action TEXT NOT NULL,
           reason TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS role_assignments(
+          chat_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('admin','moderator','helper')),
+          assigned_by INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id, user_id)
         );
         """)
         con.commit()
@@ -126,26 +148,46 @@ async def admin(message: Message):
         return False
 
 
+async def get_role(chat_id: int, user_id: int):
+    """Resolve the user's effective role. Owner is configured outside the assignable role table."""
+    if OWNER_TELEGRAM_ID.isdigit() and user_id == int(OWNER_TELEGRAM_ID):
+        return "owner"
+    with db() as con:
+        row = con.execute(
+            "SELECT role FROM role_assignments WHERE chat_id=? AND user_id=?",
+            (chat_id, user_id),
+        ).fetchone()
+    if row and row["role"] in ROLE_LABELS:
+        return row["role"]
+    # Backward compatibility: existing Telegram group administrators remain admins.
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        if member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
+            return "admin"
+    except Exception as exc:
+        log.warning("Role lookup failed for user_id=%s chat_id=%s (%s).",
+                    user_id, chat_id, type(exc).__name__)
+    return None
+
+
+async def has_permission(chat_id: int, user_id: int, permission: str):
+    role = await get_role(chat_id, user_id)
+    return role is not None and permission in ROLE_PERMISSIONS.get(role, frozenset())
+
+
 async def need_admin(message: Message):
-    if await admin(message):
-        return True
-    await message.reply("⛔ Эта команда доступна только администраторам группы.")
+    if message.from_user and message.chat.type != ChatType.PRIVATE:
+        if await has_permission(message.chat.id, message.from_user.id, "moderate"):
+            return True
+    await message.reply("⛔ Недостаточно прав. Нужна роль владельца, администратора или модератора.")
     return False
 
 
 async def callback_is_admin(callback: CallbackQuery):
-    """Authorize a panel callback against the current chat's live admin status."""
+    """Authorize admin-panel callbacks using the internal role and permission model."""
     if not callback.message or callback.message.chat.type == ChatType.PRIVATE:
         return False
-    try:
-        member = await bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
-        return member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR)
-    except Exception as exc:
-        log.warning(
-            "Callback admin check failed for user_id=%s chat_id=%s (%s).",
-            callback.from_user.id, callback.message.chat.id, type(exc).__name__,
-        )
-        return False
+    return await has_permission(callback.message.chat.id, callback.from_user.id, "panel")
 
 
 def home_keyboard(is_admin=False):
@@ -158,6 +200,23 @@ def home_keyboard(is_admin=False):
         [InlineKeyboardButton(text="📨 Обратиться к администрации", callback_data="contact")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def role_overview(chat_id: int, viewer_id: int):
+    """Build a read-only overview; role assignment controls are added in checklist item 004."""
+    viewer_role = "owner" if OWNER_TELEGRAM_ID.isdigit() and viewer_id == int(OWNER_TELEGRAM_ID) else None
+    if viewer_role is None:
+        with db() as con:
+            row = con.execute(
+                "SELECT role FROM role_assignments WHERE chat_id=? AND user_id=?",
+                (chat_id, viewer_id),
+            ).fetchone()
+        viewer_role = row["role"] if row else "admin"
+    lines = ["👑 <b>Система ролей</b>", "", "Доступные роли:"]
+    lines.extend(f"• {label}" for label in ROLE_LABELS.values())
+    lines.extend(["", f"Ваша назначенная роль: <b>{html.escape(ROLE_LABELS.get(viewer_role, 'Не определена'))}</b>",
+                  "", "Назначение и снятие ролей будет добавлено в пункте 004."])
+    return "\\n".join(lines)
 
 
 def admin_keyboard():
@@ -435,13 +494,24 @@ async def router(message: Message):
 @dp.callback_query(F.data)
 async def callbacks(callback: CallbackQuery):
     key = callback.data or ""
-    admin_keys = {
-        "admin", "commands", "stats", "panel:users", "panel:rp",
-        "panel:moderation", "panel:roles", "panel:settings", "panel:logs",
+    admin_permissions = {
+        "admin": "panel",
+        "commands": "panel",
+        "stats": "view_stats",
+        "panel:users": "panel",
+        "panel:rp": "panel",
+        "panel:moderation": "panel",
+        "panel:roles": "manage_roles",
+        "panel:settings": "manage_settings",
+        "panel:logs": "view_logs",
     }
-    if key in admin_keys and not await callback_is_admin(callback):
-        await callback.answer("⛔ Раздел доступен только администраторам группы.", show_alert=True)
-        return
+    required_permission = admin_permissions.get(key)
+    if required_permission:
+        if not callback.message or not await has_permission(
+            callback.message.chat.id, callback.from_user.id, required_permission
+        ):
+            await callback.answer("⛔ Недостаточно прав для этого раздела.", show_alert=True)
+            return
 
     if not callback.message:
         await callback.answer()
@@ -466,7 +536,7 @@ async def callbacks(callback: CallbackQuery):
             "panel:users": ("👥 Управление пользователями", "Здесь будут карточки пользователей, история взысканий и быстрые действия. Подключение — в пунктах 007 и 011."),
             "panel:rp": ("🎭 RP-действия", "Здесь будет каталог RP-действий и управление ключевыми словами. Подключение — в пунктах 005 и 006."),
             "panel:moderation": ("🛡️ Настройки модерации", "Здесь появятся параметры модерации и антиспама. Подключение — в пункте 008."),
-            "panel:roles": ("👑 Роли и права", "Здесь появится управление ролями и разрешениями персонала. Подключение — в пунктах 003 и 004."),
+            "panel:roles": ("👑 Роли и права", role_overview(callback.message.chat.id, callback.from_user.id)),
             "panel:settings": ("⚙️ Настройки чата", "Здесь появятся настройки панели для этого чата. Подключение — в пункте 009."),
             "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
         }
