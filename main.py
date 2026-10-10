@@ -535,15 +535,19 @@ async def router(message: Message):
                 await message.reply("⛔ Роль владельца защищена. Изменить её через панель нельзя.")
                 return
             actor_is_owner = OWNER_TELEGRAM_ID.isdigit() and message.from_user.id == int(OWNER_TELEGRAM_ID)
+            target_effective_role = await get_role(message.chat.id, target_id)
+            if target_effective_role == "owner":
+                await message.reply("⛔ Учётная запись владельца защищена.")
+                return
+            if target_effective_role == "admin" and not actor_is_owner:
+                await message.reply("⛔ Изменять роль администратора или другого администратора группы может только владелец.")
+                return
             with db() as con:
                 current = con.execute(
                     "SELECT role FROM role_assignments WHERE chat_id=? AND user_id=?",
                     (message.chat.id, target_id),
                 ).fetchone()
                 current_role = current["role"] if current else None
-                if current_role == "admin" and not actor_is_owner:
-                    await message.reply("⛔ Изменять роль администратора может только владелец.")
-                    return
                 if selected_role == "admin" and not actor_is_owner:
                     await message.reply("⛔ Назначать администраторов может только владелец.")
                     return
