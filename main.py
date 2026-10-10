@@ -420,11 +420,10 @@ async def user_card(chat_id: int, target_id: int, can_moderate: bool):
                                (chat_id, target_id)).fetchone()["n"]
         reprimands = con.execute("SELECT COUNT(*) AS n FROM reprimands WHERE chat_id=? AND user_id=? AND active=1",
                                  (chat_id, target_id)).fetchone()["n"]
-        role = con.execute("SELECT role FROM role_assignments WHERE chat_id=? AND user_id=?",
-                           (chat_id, target_id)).fetchone()
         recent = con.execute("SELECT action,reason,created_at FROM actions WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 5",
                              (chat_id, target_id)).fetchall()
-    role_label = ROLE_LABELS.get(role["role"], "не назначена") if role else "не назначена"
+    effective_role = await get_role(chat_id, target_id)
+    role_label = ROLE_LABELS.get(effective_role, "не назначена") if effective_role else "не назначена"
     lines = [
         "👤 <b>Карточка пользователя</b>",
         f"Имя: <b>{full_name}</b>",
