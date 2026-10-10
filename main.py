@@ -181,6 +181,12 @@ def init_db():
         if "is_enabled" not in rp_columns:
             con.execute("ALTER TABLE rp_actions ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1")
 
+        # Older installations may have an actions table without the reason column.
+        # Add it with a safe default so historical rows remain readable and writable.
+        action_columns = {row[1] for row in con.execute("PRAGMA table_info(actions)").fetchall()}
+        if "reason" not in action_columns:
+            con.execute("ALTER TABLE actions ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+
         # Versioned, idempotent schema tracking for future safe migrations.
         con.execute("""
             CREATE TABLE IF NOT EXISTS schema_migrations(
@@ -200,14 +206,20 @@ def init_db():
         for statement in indexes:
             con.execute(statement)
 
+        migration_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
         con.execute(
             "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
-            (1, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            (1, migration_time,
              "Initial versioned schema, persistent per-chat settings, and query indexes"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (2, migration_time,
+             "Add actions.reason to legacy databases without deleting action history"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 1:
-            con.execute("PRAGMA user_version=1")
+        if current_version < 2:
+            con.execute("PRAGMA user_version=2")
         con.commit()
 
 
