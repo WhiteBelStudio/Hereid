@@ -246,13 +246,13 @@ def get_chat_settings(chat_id: int):
 def chat_settings_text(chat_id: int):
     cfg = get_chat_settings(chat_id)
     return (
-        "⚙️ <b>Настройки этого чата</b>\\n\\n"
-        f"Приветствие новых участников: <b>{'включено' if cfg['welcome_enabled'] else 'выключено'}</b>\\n"
-        f"Прощание при выходе: <b>{'включено' if cfg['goodbye_enabled'] else 'выключено'}</b>\\n"
-        f"Приём обращений/жалоб: <b>{'включён' if cfg['reports_enabled'] else 'выключен'}</b>\\n\\n"
-        f"<b>Приветствие:</b> {html.escape(cfg['welcome_text'][:120])}\\n"
-        f"<b>Прощание:</b> {html.escape(cfg['goodbye_text'][:120])}\\n"
-        f"<b>Правила:</b> {html.escape(cfg['rules_text'][:180])}\\n\\n"
+        "⚙️ <b>Настройки этого чата</b>\n\n"
+        f"Приветствие новых участников: <b>{'включено' if cfg['welcome_enabled'] else 'выключено'}</b>\n"
+        f"Прощание при выходе: <b>{'включено' if cfg['goodbye_enabled'] else 'выключено'}</b>\n"
+        f"Приём обращений/жалоб: <b>{'включён' if cfg['reports_enabled'] else 'выключен'}</b>\n\n"
+        f"<b>Приветствие:</b> {html.escape(cfg['welcome_text'][:120])}\n"
+        f"<b>Прощание:</b> {html.escape(cfg['goodbye_text'][:120])}\n"
+        f"<b>Правила:</b> {html.escape(cfg['rules_text'][:180])}\n\n"
         "Шаблоны приветствия/прощания поддерживают <code>{name}</code> и <code>{chat}</code>."
     )
 
@@ -1656,7 +1656,7 @@ async def callbacks(callback: CallbackQuery):
             "rules_text": "Отправьте новые правила чата (до 1800 символов). Переносы строк сохраняются.",
         }
         await callback.message.edit_text(
-            "✏️ <b>Изменение настроек чата</b>\\n\\n" + prompts[field] + "\\nОтмена: «отмена».",
+            "✏️ <b>Изменение настроек чата</b>\n\n" + prompts[field] + "\nОтмена: «отмена».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="chatset:cancel")],
                 [InlineKeyboardButton(text="⬅️ К настройкам", callback_data="panel:settings")],
@@ -1991,7 +1991,7 @@ async def callbacks(callback: CallbackQuery):
     elif key == "rules":
         cfg = get_chat_settings(callback.message.chat.id)
         await callback.message.edit_text(
-            "⚖️ <b>Правила чата</b>\\n\\n" + html.escape(cfg["rules_text"]),
+            "⚖️ <b>Правила чата</b>\n\n" + html.escape(cfg["rules_text"]),
             reply_markup=home_keyboard(),
         )
     elif key == "contact":
