@@ -294,18 +294,18 @@ def rp_catalog(chat_id: int):
             (chat_id,),
         ).fetchall()
     if not rows:
-        return "🎭 <b>Каталог RP-действий</b>\\n\\nПока нет действий. Нажмите «Создать RP-действие»."
+        return "🎭 <b>Каталог RP-действий</b>\n\nПока нет действий. Нажмите «Создать RP-действие»."
     lines = ["🎭 <b>Каталог RP-действий</b>", ""]
     for row in rows:
         words = ", ".join(x.strip() for x in row["keywords"].split(",") if x.strip())
         state = "🟢 Включено" if row["is_enabled"] else "⚪ Выключено"
         lines.append(
-            f"<b>#{row['id']} · {html.escape(row['name'])}</b> — {state}\\n"
-            f"Ключевые слова: <code>{html.escape(words)}</code>\\n"
+            f"<b>#{row['id']} · {html.escape(row['name'])}</b> — {state}\n"
+            f"Ключевые слова: <code>{html.escape(words)}</code>\n"
             f"Ответ: {html.escape(row['response'][:180])}"
         )
-    lines.append("\\nВыберите действие кнопкой ниже, чтобы включить, отключить или изменить его.")
-    return "\\n\\n".join(lines)
+    lines.append("\nВыберите действие кнопкой ниже, чтобы включить, отключить или изменить его.")
+    return "\n\n".join(lines)
 
 
 def rp_catalog_keyboard(chat_id: int, can_manage: bool = True):
@@ -340,10 +340,10 @@ def rp_item_view(chat_id: int, action_id: int):
         return None, None
     status = "🟢 Включено" if row["is_enabled"] else "⚪ Выключено"
     text = (
-        f"🎭 <b>{html.escape(row['name'])}</b> (#{row['id']})\\n"
-        f"Статус: {status}\\n"
-        f"Ключевые слова: <code>{html.escape(row['keywords'])}</code>\\n\\n"
-        f"<b>Ответ:</b>\\n{html.escape(row['response'])}"
+        f"🎭 <b>{html.escape(row['name'])}</b> (#{row['id']})\n"
+        f"Статус: {status}\n"
+        f"Ключевые слова: <code>{html.escape(row['keywords'])}</code>\n\n"
+        f"<b>Ответ:</b>\n{html.escape(row['response'])}"
     )
     return text, bool(row["is_enabled"])
 
@@ -953,6 +953,8 @@ async def callbacks(callback: CallbackQuery):
         await callback.message.edit_text(f"<b>{title}</b>\n\n{description}", reply_markup=markup)
     elif key == "rp:create":
         with db() as con:
+            con.execute("DELETE FROM pending_rp_edits WHERE chat_id=? AND user_id=?",
+                        (callback.message.chat.id, callback.from_user.id))
             con.execute(
                 "INSERT INTO pending_panel_inputs(chat_id,user_id,kind,created_at) VALUES(?,?,?,?) "
                 "ON CONFLICT(chat_id,user_id) DO UPDATE SET kind=excluded.kind,created_at=excluded.created_at",
@@ -1033,6 +1035,8 @@ async def callbacks(callback: CallbackQuery):
                 (callback.message.chat.id, action_id),
             ).fetchone()
             if exists:
+                con.execute("DELETE FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+                            (callback.message.chat.id, callback.from_user.id))
                 con.execute(
                     "INSERT INTO pending_rp_edits(chat_id,user_id,action_id,field,created_at) VALUES(?,?,?,?,?) "
                     "ON CONFLICT(chat_id,user_id) DO UPDATE SET action_id=excluded.action_id,field=excluded.field,created_at=excluded.created_at",
@@ -1045,7 +1049,7 @@ async def callbacks(callback: CallbackQuery):
             return
         labels = {"name": "новое название (до 80 символов)", "keywords": "ключевые слова через запятую (каждое до 60 символов)", "response": "новый ответ (до 1000 символов)"}
         await callback.message.edit_text(
-            f"✏️ <b>Редактирование RP-действия #{action_id}</b>\\n\\n"
+            f"✏️ <b>Редактирование RP-действия #{action_id}</b>\n\n"
             f"Отправьте {labels[parts[3]]}. Чтобы отменить, отправьте «отмена».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ Отмена", callback_data=f"rp:item:{action_id}")],
