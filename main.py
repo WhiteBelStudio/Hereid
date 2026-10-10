@@ -462,6 +462,17 @@ def record(table, chat_id, user_id, moderator_id, reason):
         return cur.lastrowid
 
 
+def cancel_pending_operations(chat_id: int, user_id: int):
+    """Clear only this user's unfinished panel inputs in this chat."""
+    with db() as con:
+        con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?", (chat_id, user_id))
+        con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?", (chat_id, user_id))
+        con.execute("DELETE FROM pending_rp_edits WHERE chat_id=? AND user_id=?", (chat_id, user_id))
+        con.execute("DELETE FROM pending_panel_inputs WHERE chat_id=? AND user_id=?", (chat_id, user_id))
+        con.execute("DELETE FROM pending_chat_settings WHERE chat_id=? AND user_id=?", (chat_id, user_id))
+        con.commit()
+
+
 def log_action(chat_id, user_id, moderator_id, action, reason):
     """Write actions safely to current and legacy database schemas."""
     with db() as con:
@@ -1259,7 +1270,12 @@ async def router(message: Message):
             target_id = pending_user["target_id"]
             if action_name == "lookup":
                 if not value.isdigit():
-                    await message.reply("Отправьте числовой Telegram ID или «отмена».")
+                    # A non-ID message should not trigger the same prompt forever.
+                    # Silently discard the stale lookup request; a fresh search can be started.
+                    with db() as con:
+                        con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                                    (message.chat.id, message.from_user.id))
+                        con.commit()
                     return
                 target_id = int(value)
                 with db() as con:
@@ -1375,7 +1391,11 @@ async def router(message: Message):
                 await message.reply("❌ Операция отменена.")
                 return
             if not value.isdigit():
-                await message.reply("Отправьте числовой Telegram ID или «отмена».")
+                # Do not keep treating every later chat message as a role ID.
+                with db() as con:
+                    con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
                 return
             target_id = int(value)
             selected_role = pending["role"]
@@ -1654,6 +1674,10 @@ async def callbacks(callback: CallbackQuery):
     if not callback.message:
         await callback.answer()
         return
+
+    # Any inline-button interaction ends the previous text-input step for this
+    # user in this chat. Input-starting callbacks below will create a fresh state.
+    cancel_pending_operations(callback.message.chat.id, callback.from_user.id)
 
     if key == "admin":
         await callback.message.edit_text("🛡️ <b>Панель администратора</b>\nВыберите раздел:", reply_markup=admin_keyboard())
