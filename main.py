@@ -5,10 +5,15 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
+
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatMemberStatus, ChatType
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 from aiogram.filters import Command
+
+load_dotenv()
 from aiogram.types import (
     CallbackQuery, ChatPermissions, InlineKeyboardButton,
     InlineKeyboardMarkup, Message,
@@ -16,12 +21,21 @@ from aiogram.types import (
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", "heradelegend.db")
+PROXY_URL = os.getenv("TELEGRAM_PROXY", "").strip() or None
+REQUEST_TIMEOUT = float(os.getenv("TELEGRAM_REQUEST_TIMEOUT", "60"))
+
 if not TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN в переменных сервера Pterodactyl.")
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 log = logging.getLogger("heradeLegend")
-bot = Bot(TOKEN)
+
+# Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
+session = AiohttpSession(proxy=PROXY_URL, timeout=REQUEST_TIMEOUT)
+bot = Bot(TOKEN, session=session)
 dp = Dispatcher()
 
 
@@ -403,9 +417,28 @@ async def callbacks(callback: CallbackQuery):
 
 async def main():
     init_db()
-    log.info("Starting heradeLegend moderation bot")
-    await dp.start_polling(bot)
+    try:
+        log.info(
+            "Starting heradeLegend moderation bot (proxy=%s, timeout=%ss)",
+            "enabled" if PROXY_URL else "disabled",
+            REQUEST_TIMEOUT,
+        )
+        # Check connectivity before polling; never print the token or proxy credentials.
+        me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+        log.info("Connected to Telegram as @%s (id=%s)", me.username, me.id)
+        await dp.start_polling(bot)
+    except TelegramNetworkError:
+        log.exception(
+            "Cannot reach Telegram Bot API. Check server outbound access, "
+            "proxy type/credentials, and TELEGRAM_PROXY."
+        )
+        raise
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Bot stopped by keyboard interrupt.")
