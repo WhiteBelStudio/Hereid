@@ -78,3 +78,28 @@ def test_chat_settings_defaults_and_updates_persist(tmp_path, monkeypatch):
     second = main.get_chat_settings(-100777)
     assert second["welcome_enabled"] == 1
     assert second["welcome_text"] == "Welcome {name}"
+
+
+
+def test_startup_rejects_missing_token_without_starting(monkeypatch):
+    import start
+
+    monkeypatch.setattr(start.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    assert start.main() == 2
+
+
+def test_startup_prepares_database_directory_and_runs_bot(tmp_path, monkeypatch):
+    import asyncio
+    import start
+
+    monkeypatch.setattr(start.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setenv("BOT_TOKEN", "123456:TEST_TOKEN_FOR_AUTOMATED_TESTS")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "nested" / "bot.sqlite3"))
+
+    async def fake_main():
+        return None
+
+    monkeypatch.setattr(main, "main", fake_main)
+    assert start.main() == 0
+    assert (tmp_path / "nested").is_dir()
