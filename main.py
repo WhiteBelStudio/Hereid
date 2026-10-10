@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import os
 import re
@@ -8,8 +9,9 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 from aiogram.filters import Command
 
@@ -35,7 +37,7 @@ log = logging.getLogger("heradeLegend")
 
 # Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
 session = AiohttpSession(proxy=PROXY_URL, timeout=REQUEST_TIMEOUT)
-bot = Bot(TOKEN, session=session)
+bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 
@@ -127,7 +129,7 @@ async def admin(message: Message):
 async def need_admin(message: Message):
     if await admin(message):
         return True
-    await message.reply("⛔ Команда доступна только администраторам чата.")
+    await message.reply("⛔ Эта команда доступна только администраторам группы.")
     return False
 
 
@@ -153,27 +155,30 @@ def admin_keyboard():
 
 
 HELP = (
-    "📖 <b>Помощь heradeLegend</b>\n\n"
-    "• Соблюдайте правила и уважайте участников.\n"
-    "• Для жалобы напишите «жалоба» и опишите ситуацию.\n"
-    "• Если не согласны с наказанием, обратитесь к администрации.\n"
-    "• Не отправляйте пароли и коды входа."
+    "📖 <b>Справка heradeLegend</b>\n\n"
+    "• Соблюдайте правила чата и уважайте других участников.\n"
+    "• Чтобы сообщить о нарушении, напишите «жалоба» и кратко опишите ситуацию.\n"
+    "• Если вы не согласны с наказанием, обратитесь к администрации чата.\n"
+    "• Никому не сообщайте пароли и коды подтверждения."
 )
 COMMANDS = (
-    "🛡️ <b>Команды модерации</b> (используйте ответом на сообщение)\n\n"
-    "<code>бан 7д спам</code> — бан на 7 дней; <code>бан спам</code> — навсегда.\n"
-    "<code>разбан TELEGRAM_ID</code> — снять бан.\n"
-    "<code>мут 30м флуд</code> — временный мут.\n"
-    "<code>размут</code> — снять мут.\n"
-    "<code>варн флуд</code> — записать предупреждение.\n"
-    "<code>варны</code> — показать предупреждения.\n"
+    "🛡️ <b>Команды модерации</b>\n\n"
+    "Для команд с участником ответьте на его сообщение. Причину указывайте после команды.\n\n"
+    "<code>бан 7д спам</code> — заблокировать участника на 7 дней.\n"
+    "<code>бан спам</code> — заблокировать без указания срока.\n"
+    "<code>разбан TELEGRAM_ID</code> — снять блокировку по Telegram ID.\n"
+    "<code>мут 30м флуд</code> — запретить отправку сообщений на 30 минут.\n"
+    "<code>размут</code> — снять ограничение на отправку сообщений.\n"
+    "<code>варн флуд</code> — выдать предупреждение.\n"
+    "<code>варны</code> — показать активные предупреждения участника.\n"
     "<code>снять варн</code> — снять последнее активное предупреждение.\n"
-    "<code>выговор неактив</code> — записать выговор сотруднику.\n"
-    "<code>выговоры</code> — показать выговоры.\n"
+    "<code>выговор неактив</code> — записать выговор участнику.\n"
+    "<code>выговоры</code> — показать активные выговоры.\n"
     "<code>снять выговор</code> — снять последний активный выговор.\n"
-    "<code>админ меню</code> — панель администратора.\n"
-    "<code>помощь</code> — справка.\n\n"
-    "Сроки: 30м, 2ч, 7д. Нужны права бана и ограничения участников."
+    "<code>админ меню</code> — открыть меню администратора.\n"
+    "<code>помощь</code> — открыть эту справку.\n\n"
+    "Поддерживаемые сроки: 30м — минуты, 2ч — часы, 7д — дни.\n"
+    "Для модерации бот должен иметь необходимые права в группе."
 )
 
 
@@ -195,8 +200,8 @@ async def target_for(message, args):
             chat = await bot.get_chat(args[0])
             return chat.id, args[1:], None
         except TelegramAPIError:
-            return None, args[1:], "Не удалось найти username. Ответьте на сообщение пользователя или укажите Telegram ID."
-    return None, args, "Ответьте на сообщение пользователя командой или укажите Telegram ID."
+            return None, args[1:], "Не удалось найти пользователя по этому username. Ответьте на его сообщение или укажите Telegram ID."
+    return None, args, "Ответьте на сообщение участника командой или укажите его Telegram ID."
 
 
 async def send_dm(user_id, text):
@@ -237,7 +242,8 @@ async def moderation(message, cmd, args):
         try:
             await bot.unban_chat_member(chat_id, uid, only_if_banned=True)
         except TelegramAPIError as e:
-            await message.reply(f"Не удалось снять бан: {e}")
+            log.warning("Unban failed in chat_id=%s for user_id=%s: %s", chat_id, uid, type(e).__name__)
+            await message.reply("⚠️ Не удалось снять блокировку. Проверьте ID пользователя, права бота и доступность Telegram.")
             return True
         log_action(chat_id, uid, mod_id, "unban", "Снятие бана")
         await message.reply(f"✅ Пользователь <code>{uid}</code> разбанен.")
@@ -251,14 +257,14 @@ async def moderation(message, cmd, args):
     if action in ("warn", "reprimand"):
         reason = " ".join(rest).strip()
         if not reason:
-            await message.reply("Укажите причину, например: ответом на сообщение напишите <code>варн флуд</code>.")
+            await message.reply("Укажите причину. Пример: ответьте на сообщение участника командой <code>варн флуд</code>.")
             return True
         table = "warnings" if action == "warn" else "reprimands"
         rec_id = record(table, chat_id, uid, mod_id, reason)
         log_action(chat_id, uid, mod_id, action, reason)
         label = "Предупреждение" if action == "warn" else "Выговор сотруднику"
-        await message.reply(f"✅ {label} записан. ID: <code>#{rec_id}</code>\nПользователь: <code>{uid}</code>\nПричина: {reason}")
-        await send_dm(uid, f"⚠️ Вам выдано взыскание в чате {message.chat.title or chat_id}. Причина: {reason}")
+        await message.reply(f"✅ {label} добавлен в журнал. Номер записи: <code>#{rec_id}</code>\nУчастник: <code>{uid}</code>\nПричина: {html.escape(reason)}")
+        await send_dm(uid, f"⚠️ Вам вынесено взыскание в чате {html.escape(message.chat.title or str(chat_id))}. Причина: {html.escape(reason)}")
         return True
 
     if action in ("warns", "reprimands"):
@@ -273,7 +279,7 @@ async def moderation(message, cmd, args):
             await message.reply(f"📋 Активных записей «{label.lower()}» нет.")
         else:
             lines = [f"📋 <b>{label}: {len(rows)}</b>"]
-            lines += [f"• #{r['id']} — {r['reason']} ({r['created_at'][:10]})" for r in rows]
+            lines += [f"• #{r['id']} — {html.escape(r['reason'])} ({r['created_at'][:10]})" for r in rows]
             await message.reply("\n".join(lines))
         return True
 
@@ -307,17 +313,18 @@ async def moderation(message, cmd, args):
         try:
             await bot.ban_chat_member(chat_id, uid, until_date=until)
         except TelegramAPIError as e:
-            await message.reply(f"Не удалось забанить пользователя: {e}")
+            log.warning("Ban failed in chat_id=%s for user_id=%s: %s", chat_id, uid, type(e).__name__)
+            await message.reply("⚠️ Не удалось заблокировать участника. Проверьте его статус, права бота и доступность Telegram.")
             return True
         log_action(chat_id, uid, mod_id, "ban", reason)
-        await message.reply(f"🔨 Пользователь <code>{uid}</code> забанен ({period}).\nПричина: {reason}")
-        await send_dm(uid, f"Вы заблокированы в чате {message.chat.title or chat_id}. Причина: {reason}")
+        await message.reply(f"🔨 Участник <code>{uid}</code> заблокирован. Срок: {html.escape(period)}.\nПричина: {html.escape(reason)}")
+        await send_dm(uid, f"Вы заблокированы в чате {html.escape(message.chat.title or str(chat_id))}. Причина: {html.escape(reason)}")
         return True
 
     if action == "mute":
         span = duration(rest[0]) if rest else None
         if not span:
-            await message.reply("Укажите срок: ответом на сообщение напишите <code>мут 30м флуд</code>.")
+            await message.reply("Укажите срок и причину. Пример: ответьте на сообщение участника командой <code>мут 30м флуд</code>. Срок можно указать в минутах (м), часах (ч) или днях (д).")
             return True
         period = rest.pop(0)
         reason = " ".join(rest).strip() or "Причина не указана"
@@ -327,11 +334,12 @@ async def moderation(message, cmd, args):
                 until_date=datetime.now(timezone.utc) + span,
             )
         except TelegramAPIError as e:
-            await message.reply(f"Не удалось выдать мут: {e}")
+            log.warning("Mute failed in chat_id=%s for user_id=%s: %s", chat_id, uid, type(e).__name__)
+            await message.reply("⚠️ Не удалось ограничить участника. Проверьте его статус, права бота и доступность Telegram.")
             return True
         log_action(chat_id, uid, mod_id, "mute", reason)
-        await message.reply(f"🔇 Мут выдан пользователю <code>{uid}</code> на {period}.\nПричина: {reason}")
-        await send_dm(uid, f"Вам выдан мут в чате {message.chat.title or chat_id} на {period}. Причина: {reason}")
+        await message.reply(f"🔇 Участнику <code>{uid}</code> запрещено отправлять сообщения на {html.escape(period)}.\nПричина: {html.escape(reason)}")
+        await send_dm(uid, f"В чате {html.escape(message.chat.title or str(chat_id))} вам запрещено отправлять сообщения на {html.escape(period)}. Причина: {html.escape(reason)}")
         return True
 
     if action == "unmute":
@@ -346,10 +354,11 @@ async def moderation(message, cmd, args):
                 ),
             )
         except TelegramAPIError as e:
-            await message.reply(f"Не удалось снять мут: {e}")
+            log.warning("Unmute failed in chat_id=%s for user_id=%s: %s", chat_id, uid, type(e).__name__)
+            await message.reply("⚠️ Не удалось снять ограничение. Проверьте права бота и доступность Telegram.")
             return True
         log_action(chat_id, uid, mod_id, "unmute", "Мут снят")
-        await message.reply(f"🔊 Мут с пользователя <code>{uid}</code> снят.")
+        await message.reply(f"🔊 Ограничение на отправку сообщений для участника <code>{uid}</code> снято.")
         return True
     return True
 
@@ -357,7 +366,7 @@ async def moderation(message, cmd, args):
 @dp.message(Command("start"))
 async def start(message: Message):
     await message.answer(
-        "👋 Привет! Я бот-модератор <b>heradeLegend</b>.\nВыберите раздел или напишите «помощь».",
+        "👋 Привет! Я <b>heradeLegend</b> — бот для помощи в модерации чатов.\nВыберите нужный раздел в меню ниже или отправьте команду <code>/help</code>.",
         reply_markup=home_keyboard(await admin(message)),
     )
 
@@ -410,7 +419,7 @@ async def callbacks(callback: CallbackQuery):
             )
             allowed = False
         if not allowed:
-            await callback.answer("Недостаточно прав.", show_alert=True)
+            await callback.answer("Эта панель доступна только администраторам группы.", show_alert=True)
             return
         await callback.message.edit_text("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
     elif key == "commands":
@@ -421,18 +430,18 @@ async def callbacks(callback: CallbackQuery):
                 "SELECT COUNT(*) AS n FROM actions WHERE chat_id=? AND moderator_id=?",
                 (callback.message.chat.id, callback.from_user.id),
             ).fetchone()
-        await callback.message.edit_text(f"📊 <b>Ваша статистика</b>\nЗаписанных действий: {row['n']}", reply_markup=admin_keyboard())
+        await callback.message.edit_text(f"📊 <b>Ваша статистика</b>\nЗафиксировано действий: <b>{row['n']}</b>", reply_markup=admin_keyboard())
     elif key == "rules":
         await callback.message.edit_text(
-            "⚖️ <b>Правила чата</b>\n1. Уважайте участников.\n2. Не спамьте и не флудите.\n3. Соблюдайте требования администрации.",
+            "⚖️ <b>Правила чата</b>\n\n1. Уважайте других участников.\n2. Не размещайте спам и не засоряйте чат сообщениями.\n3. Соблюдайте правила сообщества и законные требования администрации.\n4. Не публикуйте чужие личные данные.",
             reply_markup=home_keyboard(),
         )
     elif key == "contact":
-        await callback.message.edit_text("📨 Опишите проблему и обратитесь к администрации чата.", reply_markup=home_keyboard())
+        await callback.message.edit_text("📨 Опишите проблему и отправьте сообщение администрации чата. Не указывайте пароли и коды подтверждения.", reply_markup=home_keyboard())
     elif key == "help":
         await callback.message.edit_text(HELP, reply_markup=home_keyboard())
     else:
-        await callback.message.edit_text("👋 <b>heradeLegend</b> — выберите раздел:", reply_markup=home_keyboard())
+        await callback.message.edit_text("👋 <b>heradeLegend</b>\nВыберите нужный раздел в меню ниже.", reply_markup=home_keyboard())
     await callback.answer()
 
 
