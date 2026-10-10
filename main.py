@@ -458,13 +458,13 @@ async def moderation(message, cmd, args):
 async def start(message: Message):
     await message.answer(
         "👋 Привет! Я <b>heradeLegend</b> — бот для помощи в модерации чатов.\nВыберите нужный раздел в меню ниже или отправьте команду <code>/help</code>.",
-        reply_markup=home_keyboard(await admin(message)),
+        reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))),
     )
 
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
-    await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(await admin(message)))
+    await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))))
 
 
 @dp.message(Command("admin"))
@@ -483,7 +483,7 @@ async def router(message: Message):
         return
     text = message.text.lower().strip(" !?.")
     if text in {"помощь", "команды", "команда", "help", "что умеешь"}:
-        await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(await admin(message)))
+        await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))))
     elif text in {"админ меню", "меню админа", "панель админа", "панель модератора"}:
         if await need_admin(message):
             await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
