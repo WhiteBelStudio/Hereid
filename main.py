@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import contextmanager
 import html
 import logging
 import os
@@ -57,14 +58,29 @@ bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseM
 dp = Dispatcher()
 
 
+@contextmanager
 def db():
-    con = sqlite3.connect(DB_PATH)
+    """Open a short-lived SQLite connection and always close it after the unit of work."""
+    con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
-    return con
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def init_db():
+    # WAL improves resilience when handlers briefly overlap on the same SQLite file.
+    # Existing records are preserved; this changes journal mode, not application data.
     with db() as con:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=NORMAL")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS warnings(
           id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
@@ -159,10 +175,36 @@ def init_db():
           PRIMARY KEY(chat_id,user_id)
         );
         """)
-        # Add the new column in-place; preserve existing SQLite data.
+        # Add new columns in-place; never drop or recreate existing tables.
         rp_columns = {row[1] for row in con.execute("PRAGMA table_info(rp_actions)").fetchall()}
         if "is_enabled" not in rp_columns:
             con.execute("ALTER TABLE rp_actions ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1")
+
+        # Versioned, idempotent schema tracking for future safe migrations.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations(
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL
+            )
+        """)
+        indexes = (
+            "CREATE INDEX IF NOT EXISTS idx_actions_chat_id_id ON actions(chat_id,id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_actions_chat_created ON actions(chat_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_warnings_chat_active ON warnings(chat_id,active)",
+            "CREATE INDEX IF NOT EXISTS idx_reprimands_chat_active ON reprimands(chat_id,active)",
+            "CREATE INDEX IF NOT EXISTS idx_roles_chat_role ON role_assignments(chat_id,role)",
+            "CREATE INDEX IF NOT EXISTS idx_rp_actions_chat_enabled ON rp_actions(chat_id,is_enabled)",
+        )
+        for statement in indexes:
+            con.execute(statement)
+
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (1, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             "Initial versioned schema, persistent per-chat settings, and query indexes"),
+        )
+        con.execute("PRAGMA user_version=1")
         con.commit()
 
 
