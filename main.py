@@ -190,7 +190,14 @@ async def moderation(message, cmd, args):
         "варны": "warns", "преды": "warns", "снять": "unwarn",
         "выговор": "reprimand", "выговоры": "reprimands", "снятьвыговор": "unreprimand",
     }
-    action = aliases.get(cmd)
+    if cmd == "снять" and args and args[0].lower() == "выговор":
+        action = "unreprimand"
+        args = args[1:]
+    elif cmd == "снять" and args and args[0].lower() in ("варн", "пред", "предупреждение"):
+        action = "unwarn"
+        args = args[1:]
+    else:
+        action = aliases.get(cmd)
     if not action:
         return False
     if not await need_admin(message):
@@ -245,7 +252,7 @@ async def moderation(message, cmd, args):
         return True
 
     if action in ("unwarn", "unreprimand"):
-        table = "reprimands" if "выговор" in cmd else "warnings"
+        table = "reprimands" if action == "unreprimand" else "warnings"
         with db() as con:
             row = con.execute(
                 f"SELECT id,reason FROM {table} WHERE chat_id=? AND user_id=? AND active=1 ORDER BY id DESC LIMIT 1",
