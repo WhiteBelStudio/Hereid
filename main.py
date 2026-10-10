@@ -183,6 +183,14 @@ async def need_admin(message: Message):
     return False
 
 
+async def need_panel_access(message: Message):
+    if message.from_user and message.chat.type != ChatType.PRIVATE:
+        if await has_permission(message.chat.id, message.from_user.id, "panel"):
+            return True
+    await message.reply("⛔ Панель доступна только пользователям с назначенной ролью или администраторам группы.")
+    return False
+
+
 async def callback_is_admin(callback: CallbackQuery):
     """Authorize admin-panel callbacks using the internal role and permission model."""
     if not callback.message or callback.message.chat.type == ChatType.PRIVATE:
@@ -469,7 +477,7 @@ async def help_command(message: Message):
 
 @dp.message(Command("admin"))
 async def admin_command(message: Message):
-    if await need_admin(message):
+    if await need_panel_access(message):
         await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
 
 
@@ -485,7 +493,7 @@ async def router(message: Message):
     if text in {"помощь", "команды", "команда", "help", "что умеешь"}:
         await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))))
     elif text in {"админ меню", "меню админа", "панель админа", "панель модератора"}:
-        if await need_admin(message):
+        if await need_panel_access(message):
             await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
     elif any(word in text for word in ("жалоба", "апелляция", "поддержка", "помогите")):
         await message.reply("📨 Опишите ситуацию и обратитесь к администрации чата. Не отправляйте пароли и коды входа.")
