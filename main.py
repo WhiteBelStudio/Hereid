@@ -133,6 +133,21 @@ async def need_admin(message: Message):
     return False
 
 
+async def callback_is_admin(callback: CallbackQuery):
+    """Authorize a panel callback against the current chat's live admin status."""
+    if not callback.message or callback.message.chat.type == ChatType.PRIVATE:
+        return False
+    try:
+        member = await bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        return member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR)
+    except Exception as exc:
+        log.warning(
+            "Callback admin check failed for user_id=%s chat_id=%s (%s).",
+            callback.from_user.id, callback.message.chat.id, type(exc).__name__,
+        )
+        return False
+
+
 def home_keyboard(is_admin=False):
     rows = []
     if is_admin:
@@ -146,11 +161,28 @@ def home_keyboard(is_admin=False):
 
 
 def admin_keyboard():
+    """Main navigation for the admin panel. Feature modules are connected in later checklist items."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📚 Команды", callback_data="commands"),
-         InlineKeyboardButton(text="📊 Моя статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="📖 Помощь", callback_data="help"),
-         InlineKeyboardButton(text="⬅️ Главное меню", callback_data="home")],
+        [
+            InlineKeyboardButton(text="👥 Пользователи", callback_data="panel:users"),
+            InlineKeyboardButton(text="🎭 RP-действия", callback_data="panel:rp"),
+        ],
+        [
+            InlineKeyboardButton(text="🛡️ Модерация", callback_data="panel:moderation"),
+            InlineKeyboardButton(text="👑 Роли и права", callback_data="panel:roles"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки чата", callback_data="panel:settings"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+        ],
+        [
+            InlineKeyboardButton(text="📜 Журнал действий", callback_data="panel:logs"),
+            InlineKeyboardButton(text="📚 Команды", callback_data="commands"),
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Обновить панель", callback_data="admin"),
+            InlineKeyboardButton(text="🏠 Главное меню", callback_data="home"),
+        ],
     ])
 
 
@@ -402,26 +434,21 @@ async def router(message: Message):
 
 @dp.callback_query(F.data)
 async def callbacks(callback: CallbackQuery):
-    key = callback.data
+    key = callback.data or ""
+    admin_keys = {
+        "admin", "commands", "stats", "panel:users", "panel:rp",
+        "panel:moderation", "panel:roles", "panel:settings", "panel:logs",
+    }
+    if key in admin_keys and not await callback_is_admin(callback):
+        await callback.answer("⛔ Раздел доступен только администраторам группы.", show_alert=True)
+        return
+
+    if not callback.message:
+        await callback.answer()
+        return
+
     if key == "admin":
-        try:
-            member = await bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
-            allowed = member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR)
-        except TelegramAPIError as exc:
-            log.warning("Cannot check callback admin rights for user_id=%s chat_id=%s: %s",
-                        callback.from_user.id, callback.message.chat.id, type(exc).__name__)
-            allowed = False
-        except Exception as exc:
-            # Includes transport/proxy errors that may bypass TelegramAPIError.
-            log.warning(
-                "Callback admin check failed for user_id=%s chat_id=%s (%s).",
-                callback.from_user.id, callback.message.chat.id, type(exc).__name__,
-            )
-            allowed = False
-        if not allowed:
-            await callback.answer("Эта панель доступна только администраторам группы.", show_alert=True)
-            return
-        await callback.message.edit_text("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
+        await callback.message.edit_text("🛡️ <b>Панель администратора</b>\nВыберите раздел:", reply_markup=admin_keyboard())
     elif key == "commands":
         await callback.message.edit_text(COMMANDS, reply_markup=admin_keyboard())
     elif key == "stats":
@@ -430,7 +457,24 @@ async def callbacks(callback: CallbackQuery):
                 "SELECT COUNT(*) AS n FROM actions WHERE chat_id=? AND moderator_id=?",
                 (callback.message.chat.id, callback.from_user.id),
             ).fetchone()
-        await callback.message.edit_text(f"📊 <b>Ваша статистика</b>\nЗафиксировано действий: <b>{row['n']}</b>", reply_markup=admin_keyboard())
+        await callback.message.edit_text(
+            f"📊 <b>Ваша статистика</b>\nЗафиксировано действий: <b>{row['n']}</b>",
+            reply_markup=admin_keyboard(),
+        )
+    elif key.startswith("panel:"):
+        sections = {
+            "panel:users": ("👥 Управление пользователями", "Здесь будут карточки пользователей, история взысканий и быстрые действия. Подключение — в пунктах 007 и 011."),
+            "panel:rp": ("🎭 RP-действия", "Здесь будет каталог RP-действий и управление ключевыми словами. Подключение — в пунктах 005 и 006."),
+            "panel:moderation": ("🛡️ Настройки модерации", "Здесь появятся параметры модерации и антиспама. Подключение — в пункте 008."),
+            "panel:roles": ("👑 Роли и права", "Здесь появится управление ролями и разрешениями персонала. Подключение — в пунктах 003 и 004."),
+            "panel:settings": ("⚙️ Настройки чата", "Здесь появятся настройки панели для этого чата. Подключение — в пункте 009."),
+            "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
+        }
+        title, description = sections[key]
+        await callback.message.edit_text(f"<b>{title}</b>\n\n{description}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+        ]))
     elif key == "rules":
         await callback.message.edit_text(
             "⚖️ <b>Правила чата</b>\n\n1. Уважайте других участников.\n2. Не размещайте спам и не засоряйте чат сообщениями.\n3. Соблюдайте правила сообщества и законные требования администрации.\n4. Не публикуйте чужие личные данные.",
