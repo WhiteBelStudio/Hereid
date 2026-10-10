@@ -340,3 +340,65 @@ def test_cancel_pending_operations_only_clears_current_user_and_chat(tmp_path, m
             "SELECT COUNT(*) FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
             (-1001, 11),
         ).fetchone()[0] == 0
+
+
+
+def test_xp_awards_respect_cooldown_and_are_chat_scoped(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xp.sqlite3"))
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    main.init_db()
+
+    assert main.award_message_xp(-100123, 456, "Test User", "test_user") is True
+    assert main.award_message_xp(-100123, 456, "Test User", "test_user") is False
+    assert main.get_xp_profile(-100123, 456)["xp"] == 5
+    assert main.get_xp_profile(-100123, 456)["eligible_messages"] == 1
+
+    now[0] += main.XP_COOLDOWN_SECONDS + 1
+    assert main.award_message_xp(-100123, 456, "Test User", "test_user") is True
+    profile = main.get_xp_profile(-100123, 456)
+    assert profile["xp"] == 10
+    assert profile["eligible_messages"] == 2
+    assert profile["display_name"] == "Test User"
+    assert profile["username"] == "test_user"
+
+    # XP is separate for each group, so one busy chat cannot affect another.
+    assert main.award_message_xp(-100999, 456, "Test User", "test_user") is True
+    assert main.get_xp_profile(-100999, 456)["xp"] == 5
+
+
+def test_xp_schema_migration_is_idempotent_and_preserves_existing_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xp_migration.sqlite3"))
+    main.init_db()
+    main.award_message_xp(-100123, 456, "Existing User", "")
+    main.init_db()
+
+    with main.db() as con:
+        row = con.execute(
+            "SELECT xp,eligible_messages FROM xp_profiles WHERE chat_id=? AND user_id=?",
+            (-100123, 456),
+        ).fetchone()
+        migration = con.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=5"
+        ).fetchone()[0]
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+
+    assert row["xp"] == 5
+    assert row["eligible_messages"] == 1
+    assert migration == 1
+    assert version >= 5
+
+
+def test_xp_leaderboard_has_clean_unframed_layout(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xp_leaderboard.sqlite3"))
+    monkeypatch.setattr(main.time, "time", lambda: 1_800_000_000.0)
+    main.init_db()
+    main.award_message_xp(-100123, 456, "Alice", "alice")
+    main.award_message_xp(-100123, 789, "Bob", "bob")
+
+    text = main.xp_leaderboard_text(-100123)
+    assert "🏆" in text
+    assert "Alice" in text
+    assert "Bob" in text
+    assert "XP" in text
+    assert "┌" not in text and "┐" not in text
