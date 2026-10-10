@@ -886,9 +886,14 @@ COMMANDS = (
 def parse(text):
     text = text.strip()
     if text.startswith("/"):
-        text = text[1:].split("@", 1)[0]
+        text = text[1:]
     parts = text.split()
-    return (parts[0].lower(), parts[1:]) if parts else ("", [])
+    if not parts:
+        return "", []
+    # Telegram command mentions belong to the command token, not the full
+    # message; stripping at the first "@" used to discard all command arguments.
+    parts[0] = parts[0].split("@", 1)[0].lower()
+    return parts[0], parts[1:]
 
 
 CONTROL_COMMANDS = frozenset({
