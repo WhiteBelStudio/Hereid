@@ -87,6 +87,13 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(chat_id, user_id)
         );
+        CREATE TABLE IF NOT EXISTS pending_role_changes(
+          chat_id INTEGER NOT NULL,
+          admin_id INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id, admin_id)
+        );
         """)
         con.commit()
 
@@ -211,7 +218,7 @@ def home_keyboard(is_admin=False):
 
 
 def role_overview(chat_id: int, viewer_id: int):
-    """Build a read-only overview; role assignment controls are added in checklist item 004."""
+    """Show role management controls and the viewer's current effective role."""
     viewer_role = "owner" if OWNER_TELEGRAM_ID.isdigit() and viewer_id == int(OWNER_TELEGRAM_ID) else None
     if viewer_role is None:
         with db() as con:
@@ -220,11 +227,23 @@ def role_overview(chat_id: int, viewer_id: int):
                 (chat_id, viewer_id),
             ).fetchone()
         viewer_role = row["role"] if row else "admin"
-    lines = ["👑 <b>Система ролей</b>", "", "Доступные роли:"]
-    lines.extend(f"• {label}" for label in ROLE_LABELS.values())
-    lines.extend(["", f"Ваша назначенная роль: <b>{html.escape(ROLE_LABELS.get(viewer_role, 'Не определена'))}</b>",
-                  "", "Назначение и снятие ролей будет добавлено в пункте 004."])
-    return "\n".join(lines)
+    return (
+        "👑 <b>Управление ролями</b>\\n\\n"
+        f"Ваша роль: <b>{html.escape(ROLE_LABELS.get(viewer_role, 'Не определена'))}</b>\\n\\n"
+        "Выберите роль для назначения сотруднику или снимите текущую роль. "
+        "После выбора бот попросит Telegram ID сотрудника.\\n\\n"
+        "⚠️ Владелец задаётся через OWNER_TELEGRAM_ID и не может быть понижен через панель."
+    )
+
+
+def roles_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛡️ Назначить администратора", callback_data="roles:grant:admin")],
+        [InlineKeyboardButton(text="🔨 Назначить модератора", callback_data="roles:grant:moderator")],
+        [InlineKeyboardButton(text="🤝 Назначить помощника", callback_data="roles:grant:helper")],
+        [InlineKeyboardButton(text="➖ Снять роль", callback_data="roles:remove")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
 
 
 def admin_keyboard():
@@ -485,6 +504,66 @@ async def admin_command(message: Message):
 async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
         return
+    if message.chat.type != ChatType.PRIVATE:
+        with db() as con:
+            pending = con.execute(
+                "SELECT role FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                (message.chat.id, message.from_user.id),
+            ).fetchone()
+        if pending:
+            value = message.text.strip()
+            if value.lower() == "отмена":
+                with db() as con:
+                    con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("❌ Операция отменена.")
+                return
+            if not value.isdigit():
+                await message.reply("Отправьте числовой Telegram ID или «отмена».")
+                return
+            target_id = int(value)
+            selected_role = pending["role"]
+            if OWNER_TELEGRAM_ID.isdigit() and target_id == int(OWNER_TELEGRAM_ID):
+                await message.reply("⛔ Роль владельца защищена. Изменить её через панель нельзя.")
+                return
+            actor_is_owner = OWNER_TELEGRAM_ID.isdigit() and message.from_user.id == int(OWNER_TELEGRAM_ID)
+            with db() as con:
+                current = con.execute(
+                    "SELECT role FROM role_assignments WHERE chat_id=? AND user_id=?",
+                    (message.chat.id, target_id),
+                ).fetchone()
+                current_role = current["role"] if current else None
+                if current_role == "admin" and not actor_is_owner:
+                    await message.reply("⛔ Изменять роль администратора может только владелец.")
+                    return
+                if selected_role == "admin" and not actor_is_owner:
+                    await message.reply("⛔ Назначать администраторов может только владелец.")
+                    return
+                if selected_role == "__remove__":
+                    con.execute("DELETE FROM role_assignments WHERE chat_id=? AND user_id=?",
+                                (message.chat.id, target_id))
+                    action_name = "role_removed"
+                    detail = "Роль снята"
+                else:
+                    con.execute(
+                        "INSERT INTO role_assignments(chat_id,user_id,role,assigned_by,created_at) VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(chat_id,user_id) DO UPDATE SET role=excluded.role,assigned_by=excluded.assigned_by,created_at=excluded.created_at",
+                        (message.chat.id, target_id, selected_role, message.from_user.id,
+                         datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                    )
+                    action_name = "role_assigned"
+                    detail = "Назначена роль: " + ROLE_LABELS[selected_role]
+                con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                            (message.chat.id, message.from_user.id))
+                con.commit()
+            log_action(message.chat.id, target_id, message.from_user.id, action_name, detail)
+            await message.reply(
+                f"✅ {html.escape(detail)} пользователю <code>{target_id}</code>.",
+                reply_markup=roles_keyboard(),
+            )
+            return
+
     cmd, args = parse(message.text)
     handled = await moderation(message, cmd, args)
     if handled:
@@ -504,6 +583,11 @@ async def callbacks(callback: CallbackQuery):
     key = callback.data or ""
     admin_permissions = {
         "admin": "panel",
+        "roles:grant:admin": "manage_roles",
+        "roles:grant:moderator": "manage_roles",
+        "roles:grant:helper": "manage_roles",
+        "roles:remove": "manage_roles",
+        "roles:cancel": "manage_roles",
         "commands": "panel",
         "stats": "view_stats",
         "panel:users": "panel",
@@ -539,6 +623,39 @@ async def callbacks(callback: CallbackQuery):
             f"📊 <b>Ваша статистика</b>\nЗафиксировано действий: <b>{row['n']}</b>",
             reply_markup=admin_keyboard(),
         )
+    elif key.startswith("roles:grant:") or key == "roles:remove":
+        selected_role = key.rsplit(":", 1)[-1] if key != "roles:remove" else "__remove__"
+        if selected_role not in ("admin", "moderator", "helper", "__remove__"):
+            await callback.answer("Неизвестная роль.", show_alert=True)
+            return
+        if selected_role == "admin" and not (
+            OWNER_TELEGRAM_ID.isdigit() and callback.from_user.id == int(OWNER_TELEGRAM_ID)
+        ):
+            await callback.answer("Назначать администраторов может только владелец.", show_alert=True)
+            return
+        with db() as con:
+            con.execute(
+                "INSERT INTO pending_role_changes(chat_id,admin_id,role,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(chat_id,admin_id) DO UPDATE SET role=excluded.role,created_at=excluded.created_at",
+                (callback.message.chat.id, callback.from_user.id, selected_role,
+                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+            con.commit()
+        action_label = "снятия роли" if selected_role == "__remove__" else "назначения роли «" + ROLE_LABELS[selected_role] + "»"
+        await callback.message.edit_text(
+            f"👤 <b>Введите Telegram ID сотрудника для {html.escape(action_label)}</b>\\n\\n"
+            "Отправьте ID следующим сообщением в этот чат. Чтобы отменить операцию, отправьте «отмена».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="roles:cancel")],
+                [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+            ]),
+        )
+    elif key == "roles:cancel":
+        with db() as con:
+            con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+                        (callback.message.chat.id, callback.from_user.id))
+            con.commit()
+        await callback.message.edit_text("Операция отменена.", reply_markup=roles_keyboard())
     elif key.startswith("panel:"):
         sections = {
             "panel:users": ("👥 Управление пользователями", "Здесь будут карточки пользователей, история взысканий и быстрые действия. Подключение — в пунктах 007 и 011."),
@@ -549,10 +666,11 @@ async def callbacks(callback: CallbackQuery):
             "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
         }
         title, description = sections[key]
-        await callback.message.edit_text(f"<b>{title}</b>\n\n{description}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        markup = roles_keyboard() if key == "panel:roles" else InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
-        ]))
+        ])
+        await callback.message.edit_text(f"<b>{title}</b>\\n\\n{description}", reply_markup=markup)
     elif key == "rules":
         await callback.message.edit_text(
             "⚖️ <b>Правила чата</b>\n\n1. Уважайте других участников.\n2. Не размещайте спам и не засоряйте чат сообщениями.\n3. Соблюдайте правила сообщества и законные требования администрации.\n4. Не публикуйте чужие личные данные.",
