@@ -54,6 +54,10 @@ Prefer replying to the target user's message when possible:
 - `снять выговор` — deactivate the newest reprimand.
 - `админ меню` — open the admin panel.
 - `помощь` / `команды` — show help.
+- `/xp` — show your XP in the current group.
+- `/topxp` — show the group XP leaderboard.
+
+XP rules: eligible text messages award **5 XP** at most once every **60 seconds** per user and group. Commands, bots, private chats, and recognized control/help messages do not award XP. XP profiles are stored per group in SQLite; the schema migration preserves all existing records.
 
 Duration formats: `30м`, `2ч`, `7д`.
 
