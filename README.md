@@ -57,7 +57,7 @@ Prefer replying to the target user's message when possible:
 - `/xp` — show your XP in the current group.
 - `/topxp` — show the group XP leaderboard.
 
-XP rules: eligible text messages award **5 XP** at most once every **60 seconds** per user and group. Commands, bots, private chats, and recognized control/help messages do not award XP. XP profiles are stored per group in SQLite; the schema migration preserves all existing records.
+XP rules: eligible text messages award **5 XP** at most once every **60 seconds** per user and group. Commands, bots, private chats, and recognized control/help messages do not award XP. XP profiles are stored per group in SQLite; the schema migration preserves all existing records. Every **100 XP** advances the user by one level. `/xp` shows the level, progress bar, and XP needed for the next level. Level-ups are announced in the group; every 100th level (100, 200, 300, and onward) receives a special milestone celebration, with custom messages for levels 100–1000 and generated milestone-specific wording for higher levels.
 
 Duration formats: `30м`, `2ч`, `7д`.
 
