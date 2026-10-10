@@ -2083,17 +2083,31 @@ async def main():
             "enabled" if PROXY_URL else "disabled",
             REQUEST_TIMEOUT,
         )
-        # Check connectivity before polling; never print the token or proxy credentials.
-        me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+
+        # First try the configured connection. If the proxy is unreachable, retry
+        # once without it; this lets the bot start on hosts with direct Telegram access.
+        try:
+            me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+        except TelegramNetworkError as proxy_error:
+            if not PROXY_URL:
+                raise
+            log.warning(
+                "Telegram connection through TELEGRAM_PROXY failed (%s). "
+                "Retrying once without proxy; proxy credentials are never logged.",
+                type(proxy_error).__name__,
+            )
+            await bot.session.close()
+            bot.session = AiohttpSession(timeout=REQUEST_TIMEOUT)
+            me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+
         log.info("Connected to Telegram as @%s (id=%s)", me.username, me.id)
         await dp.start_polling(bot)
     except TelegramNetworkError as exc:
         # Do not dump a long connector traceback for a known startup connectivity failure.
-        # The bot cannot run until Telegram Bot API is reachable.
         log.error(
-            "Startup connection to Telegram Bot API failed (%s). "
-            "Check that TELEGRAM_PROXY is a reachable SOCKS5/HTTP proxy and that it "
-            "can connect to api.telegram.org:443. The bot was not started.",
+            "Could not connect to Telegram Bot API (%s). Direct access and/or the "
+            "configured proxy may be unavailable. Check outbound access to "
+            "api.telegram.org:443 and the TELEGRAM_PROXY setting. The bot was not started.",
             type(exc).__name__,
         )
         raise SystemExit(1) from None
