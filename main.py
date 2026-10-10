@@ -1070,6 +1070,8 @@ async def callbacks(callback: CallbackQuery):
     required_permission = admin_permissions.get(key)
     if key.startswith(("rp:item:", "rp:toggle:", "rp:edit:")):
         required_permission = "manage_actions"
+    if key in ("users:find", "users:cancel"):
+        required_permission = "panel"
     if key.startswith("users:action:"):
         required_permission = "moderate"
     elif key.startswith("users:card:"):
@@ -1184,6 +1186,10 @@ async def callbacks(callback: CallbackQuery):
             reply_markup=user_lookup_keyboard(),
         )
     elif key.startswith("users:card:"):
+        with db() as con:
+            con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                        (callback.message.chat.id, callback.from_user.id))
+            con.commit()
         try:
             target_id = int(key.split(":")[2])
         except (ValueError, IndexError):
