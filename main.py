@@ -311,7 +311,8 @@ def get_xp_profile(chat_id: int, user_id: int):
     }
 
 
-LEVEL_XP_STEP = 100
+LEVEL_XP_BASE = 100
+LEVEL_XP_INCREMENT = 25
 
 MILESTONE_CONGRATULATIONS = {
     100: "Ты прошёл путь от новичка до легенды. Сотый уровень — теперь часть истории этого чата! 🕊️",
@@ -344,23 +345,38 @@ MILESTONE_CLOSERS = (
 )
 
 
+def xp_required_for_level(level: int) -> int:
+    """Cumulative XP required to reach a level; each new level costs 25 XP more."""
+    level = max(1, int(level))
+    completed_levels = level - 1
+    return (
+        completed_levels * LEVEL_XP_BASE
+        + LEVEL_XP_INCREMENT * completed_levels * (completed_levels - 1) // 2
+    )
+
+
 def xp_level(xp: int) -> int:
-    """Return the current level; each level after level 1 requires another 100 XP."""
-    return max(1, int(xp) // LEVEL_XP_STEP + 1)
+    """Calculate the level using an increasing XP requirement for every level."""
+    xp = max(0, int(xp))
+    level = 1
+    while xp >= xp_required_for_level(level + 1):
+        level += 1
+    return level
 
 
 def xp_level_progress(xp: int) -> dict:
     xp = max(0, int(xp))
     level = xp_level(xp)
-    current_level_xp = (level - 1) * LEVEL_XP_STEP
-    next_level_xp = level * LEVEL_XP_STEP
+    current_level_xp = xp_required_for_level(level)
+    next_level_xp = xp_required_for_level(level + 1)
     gained = xp - current_level_xp
+    needed = next_level_xp - current_level_xp
     return {
         "level": level,
         "current_xp": gained,
-        "needed_xp": LEVEL_XP_STEP,
+        "needed_xp": needed,
         "next_level_xp": next_level_xp,
-        "percent": min(100, max(0, int(gained * 100 / LEVEL_XP_STEP))),
+        "percent": min(100, max(0, int(gained * 100 / needed))),
     }
 
 
