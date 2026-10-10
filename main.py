@@ -1272,10 +1272,7 @@ async def router(message: Message):
                 if not value.isdigit():
                     # A non-ID message should not trigger the same prompt forever.
                     # Silently discard the stale lookup request; a fresh search can be started.
-                    with db() as con:
-                        con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
-                                    (message.chat.id, message.from_user.id))
-                        con.commit()
+                    cancel_pending_operations(message.chat.id, message.from_user.id)
                     return
                 target_id = int(value)
                 with db() as con:
@@ -1392,10 +1389,7 @@ async def router(message: Message):
                 return
             if not value.isdigit():
                 # Do not keep treating every later chat message as a role ID.
-                with db() as con:
-                    con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
-                                (message.chat.id, message.from_user.id))
-                    con.commit()
+                cancel_pending_operations(message.chat.id, message.from_user.id)
                 return
             target_id = int(value)
             selected_role = pending["role"]
