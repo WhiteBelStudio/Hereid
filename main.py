@@ -1119,9 +1119,12 @@ COMMANDS = (
     "<code>админ меню</code> — открыть меню администратора.\n"
     "<code>помощь</code> — открыть эту справку.\n\n"
     "Поддерживаемые сроки: 30м — минуты, 2ч — часы, 7д — дни.\n"
-    "⭐ <code>/xp</code> — посмотреть свой опыт в текущей группе.\n"
-    "🏆 <code>/topxp</code> — рейтинг XP участников группы.\n"
-    "Опыт: +5 XP за подходящее сообщение, не чаще одного раза в 60 секунд.\n\n"
+    "⭐ <b>Опыт и уровни</b>\\n"
+    "<code>/xp</code>, <code>/level</code>, <code>/mylevel</code> — профиль опыта и уровень.\\n"
+    "<code>мой опыт</code>, <code>мой уровень</code>, <code>опыт</code>, <code>уровень</code> — открыть профиль без слеша.\\n"
+    "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code> — рейтинг участников.\\n"
+    "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\\n"
+    "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\\n\\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
 
@@ -1144,6 +1147,9 @@ CONTROL_COMMANDS = frozenset({
     "варн", "пред", "предупреждение", "варны", "преды", "снять",
     "выговор", "выговоры", "снятьвыговор", "помощь", "команды", "команда",
     "help", "админ", "admin", "start",
+    "xp", "level", "mylevel", "опыт", "уровень", "мой опыт", "мой уровень",
+    "topxp", "xptop", "toplevel", "топопыта", "топуровней", "топ опыта",
+    "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта",
 })
 
 
@@ -1381,7 +1387,7 @@ async def admin_command(message: Message):
         await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
 
 
-@dp.message(Command("xp"))
+@dp.message(Command(commands=["xp", "level", "mylevel", "опыт", "уровень"]))
 async def xp_command(message: Message):
     if not message.from_user:
         return
@@ -1407,7 +1413,7 @@ async def xp_command(message: Message):
     )
 
 
-@dp.message(Command("topxp"))
+@dp.message(Command(commands=["topxp", "xptop", "toplevel", "топопыта", "топуровней"]))
 async def top_xp_command(message: Message):
     if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
         await message.answer("🏆 Рейтинг XP доступен в групповом чате.")
@@ -1829,6 +1835,31 @@ async def router(message: Message):
     text = message.text.lower().strip(" !?.")
     if text in {"помощь", "команды", "команда", "help", "что умеешь"}:
         await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))))
+    elif text in {"опыт", "мой опыт", "уровень", "мой уровень", "мой xp", "мой уровень опыта"}:
+        if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            await message.reply("⭐ XP работает внутри группового чата. Откройте профиль в группе, где включён бот.")
+        else:
+            profile = get_xp_profile(message.chat.id, message.from_user.id)
+            display_name = html.escape(message.from_user.full_name or "Участник")
+            username = f" (@{html.escape(message.from_user.username)})" if message.from_user.username else ""
+            progress = xp_level_progress(profile["xp"])
+            filled = progress["percent"] // 10
+            progress_bar = "🟦" * filled + "⬜" * (10 - filled)
+            await message.reply(
+                "✨ <b>ТВОЙ ПРОФИЛЬ ОПЫТА</b>\\n\\n"
+                f"👤 <b>{display_name}</b>{username}\\n"
+                f"🏅 Уровень: <b>{progress['level']}</b>\\n"
+                f"⭐ Опыт: <b>{profile['xp']} XP</b>\\n"
+                f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\\n"
+                f"{progress_bar} <b>{progress['percent']}%</b>\\n"
+                f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\\n"
+                f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>"
+            )
+    elif text in {"топ опыта", "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта"}:
+        if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            await message.reply("🏆 Рейтинг XP доступен в групповом чате.")
+        else:
+            await message.reply(xp_leaderboard_text(message.chat.id))
     elif text in {"админ меню", "меню админа", "панель админа", "панель модератора"}:
         if await need_panel_access(message):
             await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
