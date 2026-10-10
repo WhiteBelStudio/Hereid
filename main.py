@@ -278,17 +278,17 @@ def rp_catalog(chat_id: int):
             (chat_id,),
         ).fetchall()
     if not rows:
-        return "🎭 <b>Каталог RP-действий</b>\\n\\nПока нет действий. Нажмите «Создать RP-действие»."
+        return "🎭 <b>Каталог RP-действий</b>\n\nПока нет действий. Нажмите «Создать RP-действие»."
     lines = ["🎭 <b>Каталог RP-действий</b>", ""]
     for row in rows:
         words = ", ".join(x.strip() for x in row["keywords"].split(",") if x.strip())
         lines.append(
-            f"<b>#{row['id']} · {html.escape(row['name'])}</b>\\n"
-            f"Ключевые слова: <code>{html.escape(words)}</code>\\n"
+            f"<b>#{row['id']} · {html.escape(row['name'])}</b>\n"
+            f"Ключевые слова: <code>{html.escape(words)}</code>\n"
             f"Ответ: {html.escape(row['response'][:180])}"
         )
-    lines.append("\\nДля каждого действия можно задать несколько ключевых слов.")
-    return "\\n\\n".join(lines)
+    lines.append("\nДля каждого действия можно задать несколько ключевых слов.")
+    return "\n\n".join(lines)
 
 
 def admin_keyboard():
@@ -683,7 +683,7 @@ async def router(message: Message):
                 if any(normalized == " ".join(word.casefold().split())
                        for word in row["keywords"].split(",") if word.strip()):
                     await message.reply(
-                        f"<b>{html.escape(row['name'])}</b>\\n{html.escape(row['response'])}"
+                        f"<b>{html.escape(row['name'])}</b>\n{html.escape(row['response'])}"
                     )
                     return
 
@@ -811,10 +811,10 @@ async def callbacks(callback: CallbackQuery):
             )
             con.commit()
         await callback.message.edit_text(
-            "➕ <b>Создание RP-действия</b>\\n\\n"
-            "Отправьте одной строкой в формате:\\n"
-            "<code>Название | ключ1, ключ2 | Ответ бота</code>\\n\\n"
-            "Пример: <code>Приветствие | привет, здарова | *кивает и приветствует*</code>\\n"
+            "➕ <b>Создание RP-действия</b>\n\n"
+            "Отправьте одной строкой в формате:\n"
+            "<code>Название | ключ1, ключ2 | Ответ бота</code>\n\n"
+            "Пример: <code>Приветствие | привет, здарова | *кивает и приветствует*</code>\n"
             "Ключевые слова должны быть короткими фразами. Отмена: «отмена».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="rp:cancel")],
