@@ -2088,7 +2088,9 @@ async def main():
         # once without it; this lets the bot start on hosts with direct Telegram access.
         try:
             me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
-        except TelegramNetworkError as proxy_error:
+        except Exception as proxy_error:
+            # aiohttp-socks may raise python_socks.ProxyError directly instead of
+            # aiogram's TelegramNetworkError, so catch the proxy connector failure too.
             if not PROXY_URL:
                 raise
             log.warning(
@@ -2098,7 +2100,16 @@ async def main():
             )
             await bot.session.close()
             bot.session = AiohttpSession(timeout=REQUEST_TIMEOUT)
-            me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+            try:
+                me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+            except Exception as direct_error:
+                log.error(
+                    "Direct Telegram connection also failed (%s). Check host outbound "
+                    "access to api.telegram.org:443 or configure a working TELEGRAM_PROXY. "
+                    "The bot was not started.",
+                    type(direct_error).__name__,
+                )
+                raise SystemExit(1) from None
 
         log.info("Connected to Telegram as @%s (id=%s)", me.username, me.id)
         await dp.start_polling(bot)
