@@ -103,12 +103,24 @@ def duration(value):
 
 
 async def admin(message: Message):
+    """Return whether the sender is a chat admin; fail closed on API/proxy errors."""
     if not message.from_user or message.chat.type == ChatType.PRIVATE:
         return False
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
         return member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR)
-    except TelegramAPIError:
+    except TelegramAPIError as exc:
+        log.warning("Cannot check admin rights for user_id=%s chat_id=%s: %s",
+                    message.from_user.id, message.chat.id, type(exc).__name__)
+        return False
+    except Exception as exc:
+        # aiohttp-socks can raise ProxyError directly, outside aiogram's API exceptions.
+        # Do not let a broken proxy crash /start or /help; authorization remains denied.
+        log.warning(
+            "Admin check failed for user_id=%s chat_id=%s (%s). "
+            "Check TELEGRAM_PROXY connectivity and SOCKS5/HTTP proxy type.",
+            message.from_user.id, message.chat.id, type(exc).__name__,
+        )
         return False
 
 
@@ -386,7 +398,16 @@ async def callbacks(callback: CallbackQuery):
         try:
             member = await bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
             allowed = member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR)
-        except TelegramAPIError:
+        except TelegramAPIError as exc:
+            log.warning("Cannot check callback admin rights for user_id=%s chat_id=%s: %s",
+                        callback.from_user.id, callback.message.chat.id, type(exc).__name__)
+            allowed = False
+        except Exception as exc:
+            # Includes transport/proxy errors that may bypass TelegramAPIError.
+            log.warning(
+                "Callback admin check failed for user_id=%s chat_id=%s (%s).",
+                callback.from_user.id, callback.message.chat.id, type(exc).__name__,
+            )
             allowed = False
         if not allowed:
             await callback.answer("Недостаточно прав.", show_alert=True)
