@@ -32,3 +32,49 @@ def test_role_permissions_are_limited():
     assert 'moderate' in main.ROLE_PERMISSIONS['moderator']
     assert 'manage_settings' not in main.ROLE_PERMISSIONS['moderator']
     assert 'moderate' not in main.ROLE_PERMISSIONS['helper']
+
+
+
+def test_database_migrations_preserve_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "bot.sqlite3"))
+    main.init_db()
+    main.init_db()
+
+    warning_id = main.record("warnings", -100123, 456, 789, "test reason")
+    main.log_action(-100123, 456, 789, "warn", "test reason")
+    main.init_db()
+
+    with main.db() as con:
+        warning = con.execute(
+            "SELECT reason,active FROM warnings WHERE id=?", (warning_id,)
+        ).fetchone()
+        action_count = con.execute(
+            "SELECT COUNT(*) AS n FROM actions WHERE chat_id=?", (-100123,)
+        ).fetchone()["n"]
+        migration_count = con.execute(
+            "SELECT COUNT(*) AS n FROM schema_migrations"
+        ).fetchone()["n"]
+
+    assert warning["reason"] == "test reason"
+    assert warning["active"] == 1
+    assert action_count == 1
+    assert migration_count >= 1
+
+
+def test_chat_settings_defaults_and_updates_persist(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "settings.sqlite3"))
+    main.init_db()
+
+    first = main.get_chat_settings(-100777)
+    assert first["welcome_enabled"] == 0
+    assert first["reports_enabled"] == 1
+
+    with main.db() as con:
+        con.execute(
+            "UPDATE chat_settings SET welcome_enabled=1,welcome_text=? WHERE chat_id=?",
+            ("Welcome {name}", -100777),
+        )
+
+    second = main.get_chat_settings(-100777)
+    assert second["welcome_enabled"] == 1
+    assert second["welcome_text"] == "Welcome {name}"
