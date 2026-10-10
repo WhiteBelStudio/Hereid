@@ -1119,12 +1119,12 @@ COMMANDS = (
     "<code>админ меню</code> — открыть меню администратора.\n"
     "<code>помощь</code> — открыть эту справку.\n\n"
     "Поддерживаемые сроки: 30м — минуты, 2ч — часы, 7д — дни.\n"
-    "⭐ <b>Опыт и уровни</b>\\n"
-    "<code>/xp</code>, <code>/level</code>, <code>/mylevel</code> — профиль опыта и уровень.\\n"
-    "<code>мой опыт</code>, <code>мой уровень</code>, <code>опыт</code>, <code>уровень</code> — открыть профиль без слеша.\\n"
-    "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code> — рейтинг участников.\\n"
-    "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\\n"
-    "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\\n\\n"
+    "⭐ <b>Опыт и уровни</b>\n"
+    "<code>/xp</code>, <code>/level</code>, <code>/mylevel</code> — профиль опыта и уровень.\n"
+    "<code>мой опыт</code>, <code>мой уровень</code>, <code>опыт</code>, <code>уровень</code> — открыть профиль без слеша.\n"
+    "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code> — рейтинг участников.\n"
+    "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"
+    "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\n\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
 
@@ -1847,13 +1847,13 @@ async def router(message: Message):
             filled = progress["percent"] // 10
             progress_bar = "🟦" * filled + "⬜" * (10 - filled)
             await message.reply(
-                "✨ <b>ТВОЙ ПРОФИЛЬ ОПЫТА</b>\\n\\n"
-                f"👤 <b>{display_name}</b>{username}\\n"
-                f"🏅 Уровень: <b>{progress['level']}</b>\\n"
-                f"⭐ Опыт: <b>{profile['xp']} XP</b>\\n"
-                f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\\n"
-                f"{progress_bar} <b>{progress['percent']}%</b>\\n"
-                f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\\n"
+                "✨ <b>ТВОЙ ПРОФИЛЬ ОПЫТА</b>\n\n"
+                f"👤 <b>{display_name}</b>{username}\n"
+                f"🏅 Уровень: <b>{progress['level']}</b>\n"
+                f"⭐ Опыт: <b>{profile['xp']} XP</b>\n"
+                f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\n"
+                f"{progress_bar} <b>{progress['percent']}%</b>\n"
+                f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\n"
                 f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>"
             )
     elif text in {"топ опыта", "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта"}:
