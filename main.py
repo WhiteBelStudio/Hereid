@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import sqlite3
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -128,12 +130,144 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(chat_id, user_id)
         );
+        CREATE TABLE IF NOT EXISTS moderation_settings(
+          chat_id INTEGER PRIMARY KEY,
+          antispam_enabled INTEGER NOT NULL DEFAULT 1,
+          block_links INTEGER NOT NULL DEFAULT 0,
+          flood_limit INTEGER NOT NULL DEFAULT 5,
+          flood_window_seconds INTEGER NOT NULL DEFAULT 8,
+          mute_duration_minutes INTEGER NOT NULL DEFAULT 5,
+          updated_by INTEGER,
+          updated_at TEXT NOT NULL
+        );
         """)
         # Add the new column in-place; preserve existing SQLite data.
         rp_columns = {row[1] for row in con.execute("PRAGMA table_info(rp_actions)").fetchall()}
         if "is_enabled" not in rp_columns:
             con.execute("ALTER TABLE rp_actions ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1")
         con.commit()
+
+
+
+FLOOD_MESSAGES = defaultdict(deque)
+LINK_PATTERN = re.compile(r"(?:https?://|www\\.|t\\.me/|telegram\\.me/)", re.IGNORECASE)
+
+
+def get_moderation_settings(chat_id: int):
+    with db() as con:
+        row = con.execute("SELECT * FROM moderation_settings WHERE chat_id=?", (chat_id,)).fetchone()
+        if row:
+            return dict(row)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        con.execute(
+            "INSERT OR IGNORE INTO moderation_settings(chat_id,updated_at) VALUES(?,?)",
+            (chat_id, now),
+        )
+        con.commit()
+        row = con.execute("SELECT * FROM moderation_settings WHERE chat_id=?", (chat_id,)).fetchone()
+        return dict(row)
+
+
+def moderation_keyboard(chat_id: int, can_manage: bool):
+    settings = get_moderation_settings(chat_id)
+    rows = []
+    if can_manage:
+        rows.extend([
+            [InlineKeyboardButton(
+                text=("🟢 Антифлуд: ВКЛ" if settings["antispam_enabled"] else "⚪ Антифлуд: ВЫКЛ"),
+                callback_data="mod:toggle:flood",
+            )],
+            [InlineKeyboardButton(
+                text=("🔗 Блокировка ссылок: ВКЛ" if settings["block_links"] else "🔗 Блокировка ссылок: ВЫКЛ"),
+                callback_data="mod:toggle:links",
+            )],
+            [
+                InlineKeyboardButton(text=f"🌊 Флуд: {settings['flood_limit']} сообщ./{settings['flood_window_seconds']}с", callback_data="mod:cycle:flood"),
+                InlineKeyboardButton(text=f"🔇 Мут: {settings['mute_duration_minutes']} мин.", callback_data="mod:cycle:mute"),
+            ],
+        ])
+    rows.extend([
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:moderation")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def moderation_settings_text(chat_id: int):
+    settings = get_moderation_settings(chat_id)
+    return (
+        "🛡️ <b>Модерация и антиспам</b>\\n\\n"
+        f"Антифлуд: <b>{'включён' if settings['antispam_enabled'] else 'выключен'}</b>\\n"
+        f"Блокировка ссылок: <b>{'включена' if settings['block_links'] else 'выключена'}</b>\\n"
+        f"Порог флуда: <b>{settings['flood_limit']} сообщений за {settings['flood_window_seconds']} сек.</b>\\n"
+        f"Автоматический мут: <b>{settings['mute_duration_minutes']} мин.</b>\\n\\n"
+        "Антифлуд применяет временный мут при превышении порога. Блокировка ссылок удаляет сообщение с URL у обычных участников. "
+        "Администраторы и модераторы бота освобождены от автоматических ограничений."
+    )
+
+
+async def apply_automatic_moderation(message: Message) -> bool:
+    """Apply chat-scoped anti-flood/link rules. Return True when message was handled."""
+    if message.chat.type == ChatType.PRIVATE or not message.from_user or message.from_user.is_bot:
+        return False
+    if not message.text and not message.caption:
+        return False
+    content = message.text or message.caption or ""
+    if content.startswith("/"):
+        return False
+    try:
+        role = await get_role(message.chat.id, message.from_user.id)
+    except Exception:
+        role = None
+    if role in ("owner", "admin", "moderator"):
+        return False
+    settings = get_moderation_settings(message.chat.id)
+    if settings["block_links"] and LINK_PATTERN.search(content):
+        try:
+            await message.delete()
+            log_action(message.chat.id, message.from_user.id, 0, "antispam_link_removed", "Ссылка удалена настройкой блокировки ссылок")
+            return True
+        except TelegramAPIError as exc:
+            log.warning("Could not remove link message in chat_id=%s (%s)", message.chat.id, type(exc).__name__)
+            return False
+    if not settings["antispam_enabled"]:
+        return False
+    now = time.monotonic()
+    key = (message.chat.id, message.from_user.id)
+    bucket = FLOOD_MESSAGES[key]
+    window = int(settings["flood_window_seconds"])
+    while bucket and now - bucket[0] > window:
+        bucket.popleft()
+    bucket.append(now)
+    if len(bucket) < int(settings["flood_limit"]):
+        return False
+    bucket.clear()
+    until = datetime.now(timezone.utc) + timedelta(minutes=int(settings["mute_duration_minutes"]))
+    try:
+        await bot.restrict_chat_member(
+            message.chat.id, message.from_user.id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=until,
+        )
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
+        reason = f"Антифлуд: превышен порог {settings['flood_limit']} сообщений за {window} сек."
+        log_action(message.chat.id, message.from_user.id, 0, "antispam_flood_mute", reason)
+        try:
+            await bot.send_message(
+                message.chat.id,
+                f"🔇 Пользователь {html.escape(message.from_user.full_name)} ограничен на "
+                f"{settings['mute_duration_minutes']} мин. за флуд."
+            )
+        except TelegramAPIError:
+            pass
+        return True
+    except TelegramAPIError as exc:
+        log.warning("Anti-flood mute failed in chat_id=%s user_id=%s (%s)",
+                    message.chat.id, message.from_user.id, type(exc).__name__)
+        return False
 
 
 def record(table, chat_id, user_id, moderator_id, reason):
@@ -704,6 +838,8 @@ async def admin_command(message: Message):
 async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
         return
+    if await apply_automatic_moderation(message):
+        return
     if message.chat.type != ChatType.PRIVATE:
         with db() as con:
             pending_user = con.execute(
@@ -1069,6 +1205,8 @@ async def callbacks(callback: CallbackQuery):
     required_permission = admin_permissions.get(key)
     if key.startswith(("rp:item:", "rp:toggle:", "rp:edit:")):
         required_permission = "manage_actions"
+    if key.startswith(("mod:toggle:", "mod:cycle:")):
+        required_permission = "manage_settings"
     if key in ("users:find", "users:cancel"):
         required_permission = "panel"
     if key.startswith("users:action:"):
@@ -1127,6 +1265,63 @@ async def callbacks(callback: CallbackQuery):
                 [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
             ]),
         )
+    elif key.startswith("mod:toggle:"):
+        setting = key.rsplit(":", 1)[-1]
+        columns = {"flood": "antispam_enabled", "links": "block_links"}
+        if setting not in columns:
+            await callback.answer("Неизвестная настройка.", show_alert=True)
+            return
+        settings = get_moderation_settings(callback.message.chat.id)
+        new_value = 0 if settings[columns[setting]] else 1
+        with db() as con:
+            con.execute(
+                f"UPDATE moderation_settings SET {columns[setting]}=?,updated_by=?,updated_at=? WHERE chat_id=?",
+                (new_value, callback.from_user.id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 callback.message.chat.id),
+            )
+            con.commit()
+        log_action(callback.message.chat.id, None, callback.from_user.id, "moderation_setting_changed",
+                   f"{columns[setting]}={new_value}")
+        await callback.message.edit_text(
+            moderation_settings_text(callback.message.chat.id),
+            reply_markup=moderation_keyboard(
+                callback.message.chat.id,
+                await has_permission(callback.message.chat.id, callback.from_user.id, "manage_settings"),
+            ),
+        )
+    elif key.startswith("mod:cycle:"):
+        setting = key.rsplit(":", 1)[-1]
+        settings = get_moderation_settings(callback.message.chat.id)
+        if setting == "flood":
+            options = [(3, 5), (5, 8), (8, 10), (10, 15)]
+            current = (int(settings["flood_limit"]), int(settings["flood_window_seconds"]))
+            next_value = options[(options.index(current) + 1) % len(options)] if current in options else options[0]
+            assignments = ("flood_limit=?,flood_window_seconds=?", next_value)
+            detail = f"порог={next_value[0]} сообщений/{next_value[1]} сек."
+        elif setting == "mute":
+            options = [1, 5, 10, 30, 60]
+            current = int(settings["mute_duration_minutes"])
+            next_value = options[(options.index(current) + 1) % len(options)] if current in options else options[0]
+            assignments = ("mute_duration_minutes=?", (next_value,))
+            detail = f"мут={next_value} мин."
+        else:
+            await callback.answer("Неизвестный параметр.", show_alert=True)
+            return
+        with db() as con:
+            con.execute(
+                f"UPDATE moderation_settings SET {assignments[0]},updated_by=?,updated_at=? WHERE chat_id=?",
+                (*assignments[1], callback.from_user.id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 callback.message.chat.id),
+            )
+            con.commit()
+        log_action(callback.message.chat.id, None, callback.from_user.id, "moderation_setting_changed", detail)
+        await callback.message.edit_text(
+            moderation_settings_text(callback.message.chat.id),
+            reply_markup=moderation_keyboard(
+                callback.message.chat.id, 
+                await has_permission(callback.message.chat.id, callback.from_user.id, "manage_settings"),
+            ),
+        )
     elif key == "roles:cancel":
         with db() as con:
             con.execute("DELETE FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
@@ -1137,7 +1332,7 @@ async def callbacks(callback: CallbackQuery):
         sections = {
             "panel:users": ("👥 Управление пользователями", "Найдите участника по Telegram ID, посмотрите статус, активные взыскания и последние действия."),
             "panel:rp": ( "🎭 RP-действия", rp_catalog(callback.message.chat.id)),
-            "panel:moderation": ("🛡️ Настройки модерации", "Здесь появятся параметры модерации и антиспама. Подключение — в пункте 008."),
+            "panel:moderation": ("🛡️ Настройки модерации", moderation_settings_text(callback.message.chat.id)),
             "panel:roles": ("👑 Роли и права", role_overview(callback.message.chat.id, callback.from_user.id)),
             "panel:settings": ("⚙️ Настройки чата", "Здесь появятся настройки панели для этого чата. Подключение — в пункте 009."),
             "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
@@ -1152,6 +1347,11 @@ async def callbacks(callback: CallbackQuery):
                 callback.message.chat.id, callback.from_user.id, "manage_actions"
             )
             markup = rp_catalog_keyboard(callback.message.chat.id, can_manage_actions)
+        elif key == "panel:moderation":
+            can_manage_settings = await has_permission(
+                callback.message.chat.id, callback.from_user.id, "manage_settings"
+            )
+            markup = moderation_keyboard(callback.message.chat.id, can_manage_settings)
         else:
             markup = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
