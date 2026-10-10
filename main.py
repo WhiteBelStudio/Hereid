@@ -707,6 +707,118 @@ async def router(message: Message):
         return
     if message.chat.type != ChatType.PRIVATE:
         with db() as con:
+            pending_user = con.execute(
+                "SELECT target_id,action FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                (message.chat.id, message.from_user.id),
+            ).fetchone()
+        if pending_user:
+            if not await has_permission(message.chat.id, message.from_user.id, "panel"):
+                with db() as con:
+                    con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("⛔ Ваш доступ к панели изменился. Операция отменена.")
+                return
+            value = message.text.strip()
+            if value.casefold() == "отмена":
+                with db() as con:
+                    con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("❌ Операция отменена.")
+                return
+            action_name = pending_user["action"]
+            target_id = pending_user["target_id"]
+            if action_name == "lookup":
+                if not value.isdigit():
+                    await message.reply("Отправьте числовой Telegram ID или «отмена».")
+                    return
+                target_id = int(value)
+                with db() as con:
+                    con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                can_moderate = await has_permission(message.chat.id, message.from_user.id, "moderate")
+                card_text, card_markup = await user_card(message.chat.id, target_id, can_moderate)
+                await message.reply(card_text, reply_markup=card_markup)
+                return
+            if not await has_permission(message.chat.id, message.from_user.id, "moderate"):
+                with db() as con:
+                    con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("⛔ Недостаточно прав для модерации. Операция отменена.")
+                return
+            if target_id is None:
+                await message.reply("Не удалось определить пользователя. Откройте карточку повторно.")
+                return
+            try:
+                target_member = await bot.get_chat_member(message.chat.id, target_id)
+            except TelegramAPIError:
+                await message.reply("Не удалось проверить участника. Откройте карточку и попробуйте снова.")
+                return
+            if target_member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
+                with db() as con:
+                    con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("⛔ Нельзя применять ограничения к создателю или администратору Telegram.")
+                return
+            try:
+                if action_name == "warn":
+                    reason = value[:300]
+                    if not reason:
+                        await message.reply("Укажите причину предупреждения или отправьте «отмена».")
+                        return
+                    record("warnings", message.chat.id, target_id, message.from_user.id, reason)
+                    log_action(message.chat.id, target_id, message.from_user.id, "warn", reason)
+                    await send_dm(target_id, f"⚠️ Вам вынесено предупреждение в чате {html.escape(message.chat.title or str(message.chat.id))}. Причина: {html.escape(reason)}")
+                    result = "✅ Предупреждение добавлено."
+                elif action_name == "ban":
+                    parts = value.split(maxsplit=1)
+                    span = duration(parts[0]) if parts else None
+                    if span:
+                        reason = parts[1].strip() if len(parts) > 1 else "Причина не указана"
+                        until = datetime.now(timezone.utc) + span
+                    else:
+                        reason = value[:300] or "Причина не указана"
+                        until = None
+                    await bot.ban_chat_member(message.chat.id, target_id, until_date=until)
+                    log_action(message.chat.id, target_id, message.from_user.id, "ban", reason)
+                    result = "✅ Пользователь заблокирован."
+                elif action_name == "mute":
+                    parts = value.split(maxsplit=1)
+                    span = duration(parts[0]) if parts else None
+                    if not span:
+                        await message.reply("Для мута нужен срок, например <code>30м флуд</code>, или «отмена».")
+                        return
+                    reason = parts[1].strip() if len(parts) > 1 else "Причина не указана"
+                    until = datetime.now(timezone.utc) + span
+                    await bot.restrict_chat_member(
+                        message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=False),
+                        until_date=until,
+                    )
+                    log_action(message.chat.id, target_id, message.from_user.id, "mute", reason)
+                    result = "✅ Пользователь получил мут."
+                else:
+                    await message.reply("Неизвестная операция. Откройте карточку пользователя заново.")
+                    return
+            except TelegramAPIError:
+                await message.reply("⚠️ Telegram не выполнил действие. Проверьте права бота, статус пользователя и корректность срока.")
+                return
+            with db() as con:
+                con.execute("DELETE FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+                            (message.chat.id, message.from_user.id))
+                con.commit()
+            log_action(message.chat.id, target_id, message.from_user.id, "user_panel_action",
+                       f"{action_name}: {reason}")
+            can_moderate = await has_permission(message.chat.id, message.from_user.id, "moderate")
+            card_text, card_markup = await user_card(message.chat.id, target_id, can_moderate)
+            await message.reply(result + "\n\n" + card_text, reply_markup=card_markup)
+            return
+
+    if message.chat.type != ChatType.PRIVATE:
+        with db() as con:
             pending = con.execute(
                 "SELECT role FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
                 (message.chat.id, message.from_user.id),
