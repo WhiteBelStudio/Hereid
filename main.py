@@ -19,7 +19,7 @@ from aiogram.filters import Command
 
 load_dotenv()
 from aiogram.types import (
-    CallbackQuery, ChatPermissions, ErrorEvent, InlineKeyboardButton,
+    CallbackQuery, ChatMemberUpdated, ChatPermissions, ErrorEvent, InlineKeyboardButton,
     InlineKeyboardMarkup, Message,
 )
 
@@ -140,6 +140,24 @@ def init_db():
           updated_by INTEGER,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS chat_settings(
+          chat_id INTEGER PRIMARY KEY,
+          welcome_enabled INTEGER NOT NULL DEFAULT 0,
+          welcome_text TEXT NOT NULL DEFAULT 'Добро пожаловать, {name}!',
+          goodbye_enabled INTEGER NOT NULL DEFAULT 0,
+          goodbye_text TEXT NOT NULL DEFAULT 'До свидания, {name}!',
+          reports_enabled INTEGER NOT NULL DEFAULT 1,
+          rules_text TEXT NOT NULL DEFAULT '1. Уважайте других участников.\\n2. Не размещайте спам.\\n3. Не публикуйте чужие личные данные.',
+          updated_by INTEGER,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_chat_settings(
+          chat_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          field TEXT NOT NULL CHECK(field IN ('welcome_text','goodbye_text','rules_text')),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id,user_id)
+        );
         """)
         # Add the new column in-place; preserve existing SQLite data.
         rp_columns = {row[1] for row in con.execute("PRAGMA table_info(rp_actions)").fetchall()}
@@ -166,6 +184,85 @@ def get_moderation_settings(chat_id: int):
         con.commit()
         row = con.execute("SELECT * FROM moderation_settings WHERE chat_id=?", (chat_id,)).fetchone()
         return dict(row)
+
+
+
+def get_chat_settings(chat_id: int):
+    with db() as con:
+        row = con.execute("SELECT * FROM chat_settings WHERE chat_id=?", (chat_id,)).fetchone()
+        if row:
+            return dict(row)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        con.execute("INSERT OR IGNORE INTO chat_settings(chat_id,updated_at) VALUES(?,?)", (chat_id, now))
+        con.commit()
+        return dict(con.execute("SELECT * FROM chat_settings WHERE chat_id=?", (chat_id,)).fetchone())
+
+
+def chat_settings_text(chat_id: int):
+    cfg = get_chat_settings(chat_id)
+    return (
+        "⚙️ <b>Настройки этого чата</b>\\n\\n"
+        f"Приветствие новых участников: <b>{'включено' if cfg['welcome_enabled'] else 'выключено'}</b>\\n"
+        f"Прощание при выходе: <b>{'включено' if cfg['goodbye_enabled'] else 'выключено'}</b>\\n"
+        f"Приём обращений/жалоб: <b>{'включён' if cfg['reports_enabled'] else 'выключен'}</b>\\n\\n"
+        f"<b>Приветствие:</b> {html.escape(cfg['welcome_text'][:120])}\\n"
+        f"<b>Прощание:</b> {html.escape(cfg['goodbye_text'][:120])}\\n"
+        f"<b>Правила:</b> {html.escape(cfg['rules_text'][:180])}\\n\\n"
+        "Шаблоны приветствия/прощания поддерживают <code>{name}</code> и <code>{chat}</code>."
+    )
+
+
+def chat_settings_keyboard(chat_id: int, can_manage: bool):
+    cfg = get_chat_settings(chat_id)
+    rows = []
+    if can_manage:
+        rows.extend([
+            [InlineKeyboardButton(text=("👋 Приветствие: ВКЛ" if cfg["welcome_enabled"] else "👋 Приветствие: ВЫКЛ"), callback_data="chatset:toggle:welcome")],
+            [InlineKeyboardButton(text=("🚪 Прощание: ВКЛ" if cfg["goodbye_enabled"] else "🚪 Прощание: ВЫКЛ"), callback_data="chatset:toggle:goodbye")],
+            [InlineKeyboardButton(text=("📨 Обращения: ВКЛ" if cfg["reports_enabled"] else "📨 Обращения: ВЫКЛ"), callback_data="chatset:toggle:reports")],
+            [
+                InlineKeyboardButton(text="✏️ Текст приветствия", callback_data="chatset:edit:welcome_text"),
+                InlineKeyboardButton(text="✏️ Текст прощания", callback_data="chatset:edit:goodbye_text"),
+            ],
+            [InlineKeyboardButton(text="📜 Изменить правила", callback_data="chatset:edit:rules_text")],
+        ])
+    rows.extend([
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:settings")],
+        [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def handle_chat_member_update(event: ChatMemberUpdated):
+    if event.chat.type == ChatType.PRIVATE or not event.new_chat_member.user:
+        return
+    cfg = get_chat_settings(event.chat.id)
+    old_status, new_status = event.old_chat_member.status, event.new_chat_member.status
+    joined = old_status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED) and new_status in (
+        ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR,
+    )
+    left = old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR) and new_status in (
+        ChatMemberStatus.LEFT, ChatMemberStatus.KICKED,
+    )
+    if joined and cfg["welcome_enabled"]:
+        template = cfg["welcome_text"]
+    elif left and cfg["goodbye_enabled"]:
+        template = cfg["goodbye_text"]
+    else:
+        return
+    user = event.new_chat_member.user
+    try:
+        rendered = template.replace("{name}", html.escape(user.full_name)).replace(
+            "{chat}", html.escape(event.chat.title or "этот чат")
+        )
+        await bot.send_message(event.chat.id, rendered[:4000])
+    except TelegramAPIError as exc:
+        log.warning("Chat greeting failed for chat_id=%s (%s)", event.chat.id, type(exc).__name__)
+
+
+@dp.chat_member()
+async def chat_member_settings_handler(event: ChatMemberUpdated):
+    await handle_chat_member_update(event)
 
 
 def moderation_keyboard(chat_id: int, can_manage: bool):
@@ -838,6 +935,45 @@ async def admin_command(message: Message):
 async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
         return
+    if message.chat.type != ChatType.PRIVATE:
+        with db() as con:
+            pending_chat_setting = con.execute(
+                "SELECT field FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
+                (message.chat.id, message.from_user.id),
+            ).fetchone()
+        if pending_chat_setting:
+            if not await has_permission(message.chat.id, message.from_user.id, "manage_settings"):
+                with db() as con:
+                    con.execute("DELETE FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("⛔ Ваши права на изменение настроек изменились. Операция отменена.")
+                return
+            value = message.text.strip()
+            field = pending_chat_setting["field"]
+            if value.casefold() == "отмена":
+                with db() as con:
+                    con.execute("DELETE FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
+                                (message.chat.id, message.from_user.id))
+                    con.commit()
+                await message.reply("❌ Изменение настройки отменено.")
+                return
+            max_len = 1800 if field == "rules_text" else 350
+            if not value or len(value) > max_len:
+                await message.reply(f"Текст должен содержать от 1 до {max_len} символов. Отправьте другой вариант или «отмена».")
+                return
+            with db() as con:
+                con.execute(
+                    f"UPDATE chat_settings SET {field}=?,updated_by=?,updated_at=? WHERE chat_id=?",
+                    (value, message.from_user.id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                     message.chat.id),
+                )
+                con.execute("DELETE FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
+                            (message.chat.id, message.from_user.id))
+                con.commit()
+            log_action(message.chat.id, None, message.from_user.id, "chat_setting_changed", field)
+            await message.reply("✅ Настройка сохранена.", reply_markup=chat_settings_keyboard(message.chat.id, True))
+            return
     if await apply_automatic_moderation(message):
         return
     if message.chat.type != ChatType.PRIVATE:
@@ -1207,6 +1343,8 @@ async def callbacks(callback: CallbackQuery):
         required_permission = "manage_actions"
     if key.startswith(("mod:toggle:", "mod:cycle:")):
         required_permission = "manage_settings"
+    if key.startswith(("chatset:toggle:", "chatset:edit:", "chatset:cancel")):
+        required_permission = "manage_settings"
     if key in ("users:find", "users:cancel"):
         required_permission = "panel"
     if key.startswith("users:action:"):
@@ -1264,6 +1402,61 @@ async def callbacks(callback: CallbackQuery):
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="roles:cancel")],
                 [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
             ]),
+        )
+    elif key.startswith("chatset:toggle:"):
+        setting = key.rsplit(":", 1)[-1]
+        columns = {"welcome": "welcome_enabled", "goodbye": "goodbye_enabled", "reports": "reports_enabled"}
+        if setting not in columns:
+            await callback.answer("Неизвестная настройка.", show_alert=True)
+            return
+        cfg = get_chat_settings(callback.message.chat.id)
+        new_value = 0 if cfg[columns[setting]] else 1
+        with db() as con:
+            con.execute(
+                f"UPDATE chat_settings SET {columns[setting]}=?,updated_by=?,updated_at=? WHERE chat_id=?",
+                (new_value, callback.from_user.id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 callback.message.chat.id),
+            )
+            con.commit()
+        log_action(callback.message.chat.id, None, callback.from_user.id, "chat_setting_changed",
+                   f"{columns[setting]}={new_value}")
+        await callback.message.edit_text(
+            chat_settings_text(callback.message.chat.id),
+            reply_markup=chat_settings_keyboard(callback.message.chat.id, True),
+        )
+    elif key.startswith("chatset:edit:"):
+        field = key.rsplit(":", 1)[-1]
+        if field not in ("welcome_text", "goodbye_text", "rules_text"):
+            await callback.answer("Неизвестное поле настройки.", show_alert=True)
+            return
+        with db() as con:
+            con.execute(
+                "INSERT INTO pending_chat_settings(chat_id,user_id,field,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(chat_id,user_id) DO UPDATE SET field=excluded.field,created_at=excluded.created_at",
+                (callback.message.chat.id, callback.from_user.id, field,
+                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+            con.commit()
+        prompts = {
+            "welcome_text": "Отправьте текст приветствия (до 350 символов). Можно использовать {name} и {chat}.",
+            "goodbye_text": "Отправьте текст прощания (до 350 символов). Можно использовать {name} и {chat}.",
+            "rules_text": "Отправьте новые правила чата (до 1800 символов). Переносы строк сохраняются.",
+        }
+        await callback.message.edit_text(
+            "✏️ <b>Изменение настроек чата</b>\\n\\n" + prompts[field] + "\\nОтмена: «отмена».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="chatset:cancel")],
+                [InlineKeyboardButton(text="⬅️ К настройкам", callback_data="panel:settings")],
+            ]),
+        )
+    elif key == "chatset:cancel":
+        with db() as con:
+            con.execute("DELETE FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
+                        (callback.message.chat.id, callback.from_user.id))
+            con.commit()
+        await callback.message.edit_text(
+            chat_settings_text(callback.message.chat.id),
+            reply_markup=chat_settings_keyboard(callback.message.chat.id, True),
         )
     elif key.startswith("mod:toggle:"):
         setting = key.rsplit(":", 1)[-1]
@@ -1334,7 +1527,7 @@ async def callbacks(callback: CallbackQuery):
             "panel:rp": ( "🎭 RP-действия", rp_catalog(callback.message.chat.id)),
             "panel:moderation": ("🛡️ Настройки модерации", moderation_settings_text(callback.message.chat.id)),
             "panel:roles": ("👑 Роли и права", role_overview(callback.message.chat.id, callback.from_user.id)),
-            "panel:settings": ("⚙️ Настройки чата", "Здесь появятся настройки панели для этого чата. Подключение — в пункте 009."),
+            "panel:settings": ("⚙️ Настройки чата", chat_settings_text(callback.message.chat.id)),
             "panel:logs": ("📜 Журнал действий", "Журнал действий уже записывается в базу. Расширенный просмотр и фильтры будут подключены в пункте 010."),
         }
         title, description = sections[key]
@@ -1352,6 +1545,11 @@ async def callbacks(callback: CallbackQuery):
                 callback.message.chat.id, callback.from_user.id, "manage_settings"
             )
             markup = moderation_keyboard(callback.message.chat.id, can_manage_settings)
+        elif key == "panel:settings":
+            can_manage_settings = await has_permission(
+                callback.message.chat.id, callback.from_user.id, "manage_settings"
+            )
+            markup = chat_settings_keyboard(callback.message.chat.id, can_manage_settings)
         else:
             markup = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
@@ -1566,8 +1764,9 @@ async def callbacks(callback: CallbackQuery):
             ]),
         )
     elif key == "rules":
+        cfg = get_chat_settings(callback.message.chat.id)
         await callback.message.edit_text(
-            "⚖️ <b>Правила чата</b>\n\n1. Уважайте других участников.\n2. Не размещайте спам и не засоряйте чат сообщениями.\n3. Соблюдайте правила сообщества и законные требования администрации.\n4. Не публикуйте чужие личные данные.",
+            "⚖️ <b>Правила чата</b>\\n\\n" + html.escape(cfg["rules_text"]),
             reply_markup=home_keyboard(),
         )
     elif key == "contact":
