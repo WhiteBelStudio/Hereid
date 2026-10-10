@@ -311,6 +311,86 @@ def get_xp_profile(chat_id: int, user_id: int):
     }
 
 
+LEVEL_XP_STEP = 100
+
+MILESTONE_CONGRATULATIONS = {
+    100: "Ты прошёл путь от новичка до легенды. Сотый уровень — теперь часть истории этого чата! 🕊️",
+    200: "Двести уровней выдержки и активности! Ты уже не просто участник — ты настоящая легенда сообщества. 🌟",
+    300: "Триста уровней позади! Твоя энергия стала символом постоянства. Пусть впереди будут новые вершины! 🚀",
+    400: "Уровень 400 открыт! Ты доказал, что большие достижения складываются из маленьких шагов. 🏆",
+    500: "ПОЛТЫСЯЧИ УРОВНЕЙ! Это уже достижение, достойное отдельной страницы в летописи чата. 👑",
+    600: "Шестьсотый уровень! Твой путь вдохновляет других не сдаваться и продолжать двигаться вперёд. 🔥",
+    700: "Семьсот уровней мастерства! Ты поднялся туда, куда доходят только самые настойчивые. 💎",
+    800: "Восьмисотый уровень покорён! Твоя история в этом чате становится по-настоящему эпической. ⚡",
+    900: "Девятьсот уровней — почти невероятная высота! Ещё один шаг к тысячной легенде. 🌌",
+    1000: "ЛЕГЕНДАРНАЯ ТЫСЯЧА! Ты достиг вершины, о которой мечтают единицы. История heradeLegend запомнит этот момент! 🕊️👑",
+}
+
+MILESTONE_OPENERS = (
+    "Новая вершина покорена", "История чата пополнилась достижением",
+    "Твой путь вышел на новый масштаб", "Ты доказал силу постоянства",
+    "Ещё одна легендарная отметка позади", "Сообщество встречает твоё достижение",
+    "Твой прогресс впечатляет", "Сегодня ты вписал новую главу в свою историю",
+    "Это достижение заслуживает аплодисментов", "Ты поднял планку ещё выше",
+    "Твоя настойчивость принесла результат", "Ещё одна высота теперь твоя",
+)
+MILESTONE_CLOSERS = (
+    "продолжай создавать историю! 🕊️", "пусть следующая вершина будет ещё ярче! 🌟",
+    "впереди ждут новые рекорды! 🚀", "сохраняй этот легендарный темп! 🔥",
+    "чат гордится твоим упорством! 🏆", "пусть твой путь вдохновляет других! 💎",
+    "ты доказал, что пределы можно расширять! ⚡", "это только новая глава! 📖",
+    "пусть каждый следующий шаг будет уверенным! ✨", "вперёд — к следующей сотне! 👑",
+    "твоя история продолжается! 🌌", "не останавливайся на достигнутом! 🎉",
+)
+
+
+def xp_level(xp: int) -> int:
+    """Return the current level; each level after level 1 requires another 100 XP."""
+    return max(1, int(xp) // LEVEL_XP_STEP + 1)
+
+
+def xp_level_progress(xp: int) -> dict:
+    xp = max(0, int(xp))
+    level = xp_level(xp)
+    current_level_xp = (level - 1) * LEVEL_XP_STEP
+    next_level_xp = level * LEVEL_XP_STEP
+    gained = xp - current_level_xp
+    return {
+        "level": level,
+        "current_xp": gained,
+        "needed_xp": LEVEL_XP_STEP,
+        "next_level_xp": next_level_xp,
+        "percent": min(100, max(0, int(gained * 100 / LEVEL_XP_STEP))),
+    }
+
+
+def level_up_announcement(previous_xp: int, current_xp: int, display_name: str) -> str | None:
+    previous_level = xp_level(previous_xp)
+    current_level = xp_level(current_xp)
+    if current_level <= previous_level:
+        return None
+    safe_name = html.escape((display_name or "Участник")[:128])
+    if current_level % 100 == 0:
+        if current_level in MILESTONE_CONGRATULATIONS:
+            celebration = MILESTONE_CONGRATULATIONS[current_level]
+        else:
+            milestone_index = current_level // 100
+            opener = MILESTONE_OPENERS[(milestone_index - 1) % len(MILESTONE_OPENERS)]
+            closer = MILESTONE_CLOSERS[(milestone_index * 7 - 1) % len(MILESTONE_CLOSERS)]
+            celebration = f"{opener}! Ты достиг {current_level}-го уровня — {closer}"
+        return (
+            f"🎊 <b>НЕВЕРОЯТНОЕ ДОСТИЖЕНИЕ!</b>\\n\\n"
+            f"👑 <b>{safe_name}</b>, ты достиг <b>{current_level}-го уровня!</b>\\n"
+            f"🌠 {html.escape(celebration)}"
+        )
+    return (
+        f"🎉 <b>НОВЫЙ УРОВЕНЬ!</b>\\n\\n"
+        f"✨ <b>{safe_name}</b>, теперь у тебя <b>{current_level}-й уровень</b>!\\n"
+        f"⭐ Опыт: <b>{current_xp} XP</b>\\n"
+        "Продолжай участвовать в жизни чата — впереди новые достижения!"
+    )
+
+
 def xp_leaderboard_text(chat_id: int, limit: int = 10) -> str:
     limit = max(1, min(10, int(limit)))
     with db() as con:
@@ -1295,11 +1375,18 @@ async def xp_command(message: Message):
     profile = get_xp_profile(message.chat.id, message.from_user.id)
     display_name = html.escape(message.from_user.full_name or "Участник")
     username = f" (@{html.escape(message.from_user.username)})" if message.from_user.username else ""
+    progress = xp_level_progress(profile["xp"])
+    filled = progress["percent"] // 10
+    progress_bar = "🟦" * filled + "⬜" * (10 - filled)
     await message.answer(
-        "✨ <b>ТВОЙ ОПЫТ</b>\n\n"
-        f"👤 <b>{display_name}</b>{username}\n"
-        f"⭐ <b>{profile['xp']} XP</b>\n"
-        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\n\n"
+        "✨ <b>ТВОЙ ПРОФИЛЬ ОПЫТА</b>\\n\\n"
+        f"👤 <b>{display_name}</b>{username}\\n"
+        f"🏅 Уровень: <b>{progress['level']}</b>\\n"
+        f"⭐ Опыт: <b>{profile['xp']} XP</b>\\n"
+        f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\\n"
+        f"{progress_bar} <b>{progress['percent']}%</b>\\n"
+        f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\\n"
+        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\\n\\n"
         "Пиши по делу и участвуй в жизни чата — опыт начисляется постепенно."
     )
 
@@ -1365,11 +1452,20 @@ async def router(message: Message):
         and not is_control_message(message.text)
     ):
         try:
-            award_message_xp(
+            before_profile = get_xp_profile(message.chat.id, message.from_user.id)
+            awarded = award_message_xp(
                 message.chat.id, message.from_user.id,
                 message.from_user.full_name or "Участник",
                 message.from_user.username or "",
             )
+            if awarded:
+                after_profile = get_xp_profile(message.chat.id, message.from_user.id)
+                announcement = level_up_announcement(
+                    before_profile["xp"], after_profile["xp"],
+                    message.from_user.full_name or "Участник",
+                )
+                if announcement:
+                    await message.answer(announcement)
         except sqlite3.Error as exc:
             log.warning("XP award failed in chat_id=%s user_id=%s (%s)",
                         message.chat.id, message.from_user.id, type(exc).__name__)
