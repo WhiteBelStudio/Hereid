@@ -686,9 +686,19 @@ async def user_card(chat_id: int, target_id: int, can_moderate: bool):
         user = member.user
         full_name = html.escape(" ".join(x for x in (user.first_name, user.last_name) if x) or "Без имени")
         username = f"@{html.escape(user.username)}" if user.username else "не указан"
-    except TelegramAPIError:
+    except TelegramAPIError as exc:
+        log.warning("User card lookup failed in chat_id=%s user_id=%s (%s).",
+                    chat_id, target_id, type(exc).__name__)
         return (
             "⚠️ Не удалось получить карточку участника. Проверьте Telegram ID, права бота и доступность Telegram API.",
+            user_lookup_keyboard(),
+        )
+    except Exception as exc:
+        # Network/proxy libraries can raise exceptions outside aiogram's API hierarchy.
+        log.warning("Unexpected user card lookup failure in chat_id=%s user_id=%s (%s).",
+                    chat_id, target_id, type(exc).__name__)
+        return (
+            "⚠️ Не удалось проверить участника из-за ошибки соединения. Попробуйте позже.",
             user_lookup_keyboard(),
         )
     with db() as con:
@@ -881,6 +891,29 @@ def parse(text):
     return (parts[0].lower(), parts[1:]) if parts else ("", [])
 
 
+CONTROL_COMMANDS = frozenset({
+    "бан", "ban", "разбан", "unban", "мут", "mute", "размут", "unmute",
+    "варн", "пред", "предупреждение", "варны", "преды", "снять",
+    "выговор", "выговоры", "снятьвыговор", "помощь", "команды", "команда",
+    "help", "админ", "admin", "start",
+})
+
+
+def is_control_message(text: str) -> bool:
+    """Prevent RP keywords from swallowing moderation/help/panel/support commands."""
+    normalized = " ".join(text.casefold().split()).strip(" !?.")
+    command, _ = parse(text)
+    if command in CONTROL_COMMANDS:
+        return True
+    if normalized in {
+        "что умеешь", "админ меню", "меню админа", "панель админа",
+        "панель модератора", "снять варн", "снять пред", "снять предупреждение",
+        "снять выговор",
+    }:
+        return True
+    return any(term in normalized for term in ("жалоба", "апелляция", "поддержка", "помогите"))
+
+
 async def target_for(message, args):
     if message.reply_to_message and message.reply_to_message.from_user:
         return message.reply_to_message.from_user.id, args, None
@@ -890,8 +923,12 @@ async def target_for(message, args):
         try:
             chat = await bot.get_chat(args[0])
             return chat.id, args[1:], None
-        except TelegramAPIError:
+        except TelegramAPIError as exc:
+            log.warning("Username lookup failed for %s (%s).", args[0], type(exc).__name__)
             return None, args[1:], "Не удалось найти пользователя по этому username. Ответьте на его сообщение или укажите Telegram ID."
+        except Exception as exc:
+            log.warning("Unexpected username lookup failure for %s (%s).", args[0], type(exc).__name__)
+            return None, args[1:], "Не удалось проверить username из-за ошибки соединения. Укажите Telegram ID или попробуйте позже."
     return None, args, "Ответьте на сообщение участника командой или укажите его Telegram ID."
 
 
@@ -1430,7 +1467,7 @@ async def router(message: Message):
             return
 
         # Exact keyword matches only; ordinary messages otherwise pass through unchanged.
-        if not message.text.startswith("/"):
+        if not message.text.startswith("/") and not is_control_message(message.text):
             normalized = " ".join(message.text.casefold().split())
             with db() as con:
                 rows = con.execute(
@@ -1789,8 +1826,15 @@ async def callbacks(callback: CallbackQuery):
             return
         try:
             member = await bot.get_chat_member(callback.message.chat.id, target_id)
-        except TelegramAPIError:
+        except TelegramAPIError as exc:
+            log.warning("User action target lookup failed in chat_id=%s user_id=%s (%s).",
+                        callback.message.chat.id, target_id, type(exc).__name__)
             await callback.answer("Не удалось проверить участника. Проверьте ID и доступность Telegram.", show_alert=True)
+            return
+        except Exception as exc:
+            log.warning("Unexpected user action target lookup failure in chat_id=%s user_id=%s (%s).",
+                        callback.message.chat.id, target_id, type(exc).__name__)
+            await callback.answer("Ошибка соединения при проверке участника. Попробуйте позже.", show_alert=True)
             return
         if member.status in (ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR):
             await callback.answer("Нельзя применять эти ограничения к создателю или администратору Telegram.", show_alert=True)
