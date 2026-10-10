@@ -277,3 +277,66 @@ def test_startup_prepares_database_directory_and_runs_bot(tmp_path, monkeypatch)
     monkeypatch.setattr(main, "main", fake_main)
     assert start.main() == 0
     assert (tmp_path / "nested").is_dir()
+
+
+
+def test_cancel_pending_operations_only_clears_current_user_and_chat(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "pending.sqlite3"
+    monkeypatch.setattr(main, "DB_PATH", str(db_path))
+    main.init_db()
+
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "INSERT INTO pending_user_actions(chat_id,admin_id,target_id,action,created_at) VALUES(?,?,?,?,?)",
+            (-1001, 11, None, "lookup", "2026-10-11T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO pending_user_actions(chat_id,admin_id,target_id,action,created_at) VALUES(?,?,?,?,?)",
+            (-1001, 22, None, "lookup", "2026-10-11T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO pending_role_changes(chat_id,admin_id,role,created_at) VALUES(?,?,?,?)",
+            (-1001, 11, "moderator", "2026-10-11T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO pending_rp_edits(chat_id,user_id,action_id,field,created_at) VALUES(?,?,?,?,?)",
+            (-1001, 11, 7, "name", "2026-10-11T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO pending_panel_inputs(chat_id,user_id,kind,created_at) VALUES(?,?,?,?)",
+            (-1001, 11, "rp_create", "2026-10-11T00:00:00+00:00"),
+        )
+        con.execute(
+            "INSERT INTO pending_chat_settings(chat_id,user_id,field,created_at) VALUES(?,?,?,?)",
+            (-1001, 11, "welcome_text", "2026-10-11T00:00:00+00:00"),
+        )
+
+    main.cancel_pending_operations(-1001, 11)
+
+    with sqlite3.connect(db_path) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+            (-1001, 11),
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM pending_user_actions WHERE chat_id=? AND admin_id=?",
+            (-1001, 22),
+        ).fetchone()[0] == 1
+        assert con.execute(
+            "SELECT COUNT(*) FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
+            (-1001, 11),
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM pending_rp_edits WHERE chat_id=? AND user_id=?",
+            (-1001, 11),
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM pending_panel_inputs WHERE chat_id=? AND user_id=?",
+            (-1001, 11),
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM pending_chat_settings WHERE chat_id=? AND user_id=?",
+            (-1001, 11),
+        ).fetchone()[0] == 0
