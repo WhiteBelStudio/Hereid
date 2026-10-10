@@ -263,12 +263,15 @@ def roles_keyboard():
     ])
 
 
-def rp_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Создать RP-действие", callback_data="rp:create")],
+def rp_keyboard(can_manage: bool = True):
+    rows = []
+    if can_manage:
+        rows.append([InlineKeyboardButton(text="➕ Создать RP-действие", callback_data="rp:create")])
+    rows.extend([
         [InlineKeyboardButton(text="🔄 Обновить список", callback_data="panel:rp")],
         [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def rp_catalog(chat_id: int):
@@ -794,7 +797,10 @@ async def callbacks(callback: CallbackQuery):
         if key == "panel:roles":
             markup = roles_keyboard()
         elif key == "panel:rp":
-            markup = rp_keyboard()
+            can_manage_actions = await has_permission(
+                callback.message.chat.id, callback.from_user.id, "manage_actions"
+            )
+            markup = rp_keyboard(can_manage_actions)
         else:
             markup = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
