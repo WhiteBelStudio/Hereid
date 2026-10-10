@@ -445,3 +445,17 @@ def test_level_up_announcement_only_on_level_change_and_milestones_are_special()
     assert milestone_100 != milestone_200
     assert milestone_200 != milestone_1100
     assert "<b>Alice</b>" in milestone_100
+
+
+
+def test_xp_keywords_are_documented_and_excluded_from_xp_farming():
+    for keyword in (
+        "мой опыт", "мой уровень", "мой xp", "топ опыта", "топ уровней",
+        "рейтинг опыта", "лидеры опыта",
+    ):
+        assert main.is_control_message(keyword), keyword
+    assert "/xp" in main.COMMANDS
+    assert "/level" in main.COMMANDS
+    assert "/topxp" in main.COMMANDS
+    assert "мой опыт" in main.COMMANDS
+    assert "топ опыта" in main.COMMANDS
