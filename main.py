@@ -150,7 +150,7 @@ def init_db():
 
 
 FLOOD_MESSAGES = defaultdict(deque)
-LINK_PATTERN = re.compile(r"(?:https?://|www\\.|t\\.me/|telegram\\.me/)", re.IGNORECASE)
+LINK_PATTERN = re.compile(r"(?:https?://|www\.|t\.me/|telegram\.me/)", re.IGNORECASE)
 
 
 def get_moderation_settings(chat_id: int):
@@ -196,11 +196,11 @@ def moderation_keyboard(chat_id: int, can_manage: bool):
 def moderation_settings_text(chat_id: int):
     settings = get_moderation_settings(chat_id)
     return (
-        "🛡️ <b>Модерация и антиспам</b>\\n\\n"
-        f"Антифлуд: <b>{'включён' if settings['antispam_enabled'] else 'выключен'}</b>\\n"
-        f"Блокировка ссылок: <b>{'включена' if settings['block_links'] else 'выключена'}</b>\\n"
-        f"Порог флуда: <b>{settings['flood_limit']} сообщений за {settings['flood_window_seconds']} сек.</b>\\n"
-        f"Автоматический мут: <b>{settings['mute_duration_minutes']} мин.</b>\\n\\n"
+        "🛡️ <b>Модерация и антиспам</b>\n\n"
+        f"Антифлуд: <b>{'включён' if settings['antispam_enabled'] else 'выключен'}</b>\n"
+        f"Блокировка ссылок: <b>{'включена' if settings['block_links'] else 'выключена'}</b>\n"
+        f"Порог флуда: <b>{settings['flood_limit']} сообщений за {settings['flood_window_seconds']} сек.</b>\n"
+        f"Автоматический мут: <b>{settings['mute_duration_minutes']} мин.</b>\n\n"
         "Антифлуд применяет временный мут при превышении порога. Блокировка ссылок удаляет сообщение с URL у обычных участников. "
         "Администраторы и модераторы бота освобождены от автоматических ограничений."
     )
