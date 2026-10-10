@@ -712,6 +712,7 @@ async def callbacks(callback: CallbackQuery):
         "roles:remove": "manage_roles",
         "roles:cancel": "manage_roles",
         "rp:create": "manage_actions",
+        "rp:cancel": "manage_actions",
         "commands": "panel",
         "stats": "view_stats",
         "panel:users": "panel",
