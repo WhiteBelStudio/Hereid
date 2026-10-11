@@ -448,14 +448,47 @@ def test_level_up_announcement_only_on_level_change_and_milestones_are_special()
 
 
 
+def test_xp_rewards_unlock_from_level_and_activity_without_duplicates():
+    empty = {"xp": 0, "eligible_messages": 0}
+    beginner = {"xp": 100, "eligible_messages": 10}
+    rewards = main.get_xp_rewards(beginner)
+    unlocked_keys = {reward["key"] for reward in rewards["unlocked"]}
+    assert "level_2" in unlocked_keys
+    assert "messages_10" in unlocked_keys
+    assert rewards["next"] is not None
+    assert rewards["next"]["key"] in {"level_5", "messages_50"}
+
+    new_rewards = main.newly_unlocked_xp_rewards(empty, beginner)
+    assert {reward["key"] for reward in new_rewards} >= {"level_2", "messages_10"}
+    assert main.newly_unlocked_xp_rewards(beginner, beginner) == []
+
+
+def test_xp_rewards_text_and_announcement_are_safe_and_informative():
+    profile = {"xp": 225, "eligible_messages": 50, "display_name": "<Alice>", "username": ""}
+    text = main.xp_rewards_text(profile)
+    assert "ТВОИ НАГРАДЫ" in text
+    assert "Первый шаг" in text
+    assert "Открыто:" in text
+    assert "<Alice>" not in text
+    rewards = main.newly_unlocked_xp_rewards(
+        {"xp": 220, "eligible_messages": 49},
+        {"xp": 225, "eligible_messages": 50},
+    )
+    announcement = main.xp_rewards_announcement(rewards)
+    assert announcement is not None
+    assert "НОВАЯ НАГРАДА" in announcement
+    assert "/rewards" in announcement
+
+
 def test_xp_keywords_are_documented_and_excluded_from_xp_farming():
     for keyword in (
         "мой опыт", "мой уровень", "мой xp", "топ опыта", "топ уровней",
-        "рейтинг опыта", "лидеры опыта",
+        "рейтинг опыта", "лидеры опыта", "награды", "мои награды",
     ):
         assert main.is_control_message(keyword), keyword
     assert "/xp" in main.COMMANDS
     assert "/level" in main.COMMANDS
     assert "/topxp" in main.COMMANDS
+    assert "/rewards" in main.COMMANDS
     assert "мой опыт" in main.COMMANDS
     assert "топ опыта" in main.COMMANDS
