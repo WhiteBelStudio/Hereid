@@ -383,8 +383,10 @@ def find_rp_keyword_conflicts(con, chat_id: int, keywords: list[str],
         params.append(exclude_action_id)
     conflicts = {}
     for row in con.execute(query, params).fetchall():
-        for existing in normalize_rp_keywords(row["keywords"]):
-            if existing in wanted:
+        # Normalize stored values without applying new-input validation to legacy rows.
+        for raw in str(row["keywords"] or "").split(","):
+            existing = " ".join(raw.casefold().split())
+            if existing and existing in wanted:
                 conflicts[existing] = row["name"]
     return conflicts
 
