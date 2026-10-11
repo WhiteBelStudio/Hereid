@@ -492,3 +492,37 @@ def test_xp_keywords_are_documented_and_excluded_from_xp_farming():
     assert "/rewards" in main.COMMANDS
     assert "мой опыт" in main.COMMANDS
     assert "топ опыта" in main.COMMANDS
+
+def test_xp_reward_catalog_boundaries_and_completion():
+    catalog = (*main.LEVEL_REWARDS, *main.ACTIVITY_REWARDS)
+    keys = [reward["key"] for reward in catalog]
+
+    assert len(catalog) == 14
+    assert len(keys) == len(set(keys))
+
+    for reward in main.LEVEL_REWARDS:
+        threshold_xp = main.xp_required_for_level(reward["threshold"])
+        assert main.xp_reward_is_unlocked(reward, {
+            "xp": threshold_xp, "eligible_messages": 0,
+        })
+        assert not main.xp_reward_is_unlocked(reward, {
+            "xp": threshold_xp - 1, "eligible_messages": 0,
+        })
+
+    for reward in main.ACTIVITY_REWARDS:
+        threshold = reward["threshold"]
+        assert main.xp_reward_is_unlocked(reward, {
+            "xp": 0, "eligible_messages": threshold,
+        })
+        assert not main.xp_reward_is_unlocked(reward, {
+            "xp": 0, "eligible_messages": threshold - 1,
+        })
+
+    completed = main.get_xp_rewards({
+        "xp": main.xp_required_for_level(500),
+        "eligible_messages": 1000,
+    })
+    assert len(completed["unlocked"]) == completed["total"] == 14
+    assert completed["next_level"] is None
+    assert completed["next_activity"] is None
+
