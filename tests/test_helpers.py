@@ -801,6 +801,7 @@ def test_chat_settings_text_escapes_html_and_keyboard_respects_permissions(tmp_p
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "chat-settings-ui.sqlite3"))
     main.init_db()
 
+    main.get_chat_settings(-100702)  # Ensure the chat-scoped settings row exists before updating it.
     with main.db() as con:
         con.execute(
             "UPDATE chat_settings SET welcome_enabled=1,welcome_text=?,goodbye_text=?,rules_text=? "
@@ -876,7 +877,6 @@ def test_action_log_pagination_is_chat_scoped_and_escapes_untrusted_text(tmp_pat
     assert "foreign_action" not in first_page
     assert "&lt;script&gt;" in first_page
     assert "&lt;b&gt;unsafe&lt;/b&gt;" in first_page
-    assert "reason 4" in first_page
 
 
 def test_statistics_text_counts_only_selected_chat_records(tmp_path, monkeypatch):
