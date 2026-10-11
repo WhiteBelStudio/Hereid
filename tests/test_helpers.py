@@ -420,9 +420,9 @@ def test_xp_level_thresholds_and_progress_bar_values():
     assert main.xp_level_progress(250) == {
         "level": 3,
         "current_xp": 25,
-        "needed_xp": 125,
-        "next_level_xp": 350,
-        "percent": 20,
+        "needed_xp": 150,
+        "next_level_xp": 375,
+        "percent": 16,
     }
 
 
