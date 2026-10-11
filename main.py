@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import contextmanager
+import hashlib
 import html
 import logging
 import os
@@ -200,6 +201,23 @@ def init_db():
           PRIMARY KEY(chat_id, voter_id, target_id),
           CHECK(voter_id <> target_id)
         );
+        CREATE TABLE IF NOT EXISTS reputation_rate_limits(
+          chat_id INTEGER NOT NULL,
+          voter_id INTEGER NOT NULL,
+          last_vote_at REAL NOT NULL,
+          PRIMARY KEY(chat_id, voter_id)
+        );
+        CREATE TABLE IF NOT EXISTS xp_message_fingerprints(
+          chat_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_seen_at REAL NOT NULL,
+          PRIMARY KEY(chat_id, user_id, content_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reputation_target
+          ON reputation_votes(chat_id, target_id);
+        CREATE INDEX IF NOT EXISTS idx_xp_fingerprint_seen
+          ON xp_message_fingerprints(last_seen_at);
         """)
         # Repair legacy moderation tables in place before creating indexes that
         # reference their columns. Existing rows remain active by default.
@@ -290,15 +308,65 @@ def init_db():
             (7, migration_time,
              "Add per-chat reputation votes with one vote per voter and target"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (8, migration_time,
+             "Add XP duplicate-message fingerprints and reputation vote rate limits"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 7:
-            con.execute("PRAGMA user_version=7")
+        if current_version < 8:
+            con.execute("PRAGMA user_version=8")
         con.commit()
 
 
 
 XP_PER_MESSAGE = 5
 XP_COOLDOWN_SECONDS = 60
+XP_DUPLICATE_MESSAGE_WINDOW_SECONDS = 600
+XP_FINGERPRINT_RETENTION_SECONDS = 86400
+REPUTATION_VOTE_COOLDOWN_SECONDS = 30
+
+
+def is_duplicate_xp_message(chat_id: int, user_id: int, text: str) -> bool:
+    """Reject identical normalized text from XP farming for ten minutes."""
+    normalized = " ".join((text or "").casefold().split())
+    if len(normalized) < 3:
+        return True
+    fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    now = time.time()
+    try:
+        with db() as con:
+            # Bound table growth while retaining enough history to detect farming.
+            con.execute(
+                "DELETE FROM xp_message_fingerprints WHERE last_seen_at < ?",
+                (now - XP_FINGERPRINT_RETENTION_SECONDS,),
+            )
+            row = con.execute(
+                "SELECT last_seen_at FROM xp_message_fingerprints "
+                "WHERE chat_id=? AND user_id=? AND content_hash=?",
+                (chat_id, user_id, fingerprint),
+            ).fetchone()
+            if row and now - float(row["last_seen_at"]) < XP_DUPLICATE_MESSAGE_WINDOW_SECONDS:
+                con.execute(
+                    "UPDATE xp_message_fingerprints SET last_seen_at=? "
+                    "WHERE chat_id=? AND user_id=? AND content_hash=?",
+                    (now, chat_id, user_id, fingerprint),
+                )
+                return True
+            con.execute(
+                """
+                INSERT INTO xp_message_fingerprints(chat_id,user_id,content_hash,last_seen_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(chat_id,user_id,content_hash)
+                DO UPDATE SET last_seen_at=excluded.last_seen_at
+                """,
+                (chat_id, user_id, fingerprint, now),
+            )
+        return False
+    except sqlite3.Error as exc:
+        # Fail open for this extra filter; the transactional XP cooldown still applies.
+        log.warning("XP duplicate filter failed in chat_id=%s (%s)", chat_id, type(exc).__name__)
+        return False
 
 
 def award_message_xp(chat_id: int, user_id: int, display_name: str, username: str = "") -> bool:
@@ -361,11 +429,12 @@ def get_reputation(chat_id: int, user_id: int) -> dict[str, int]:
 
 
 def cast_reputation_vote(chat_id: int, voter_id: int, target_id: int, value: int) -> str:
-    """Create or change a user's vote for a target, scoped to a single chat."""
+    """Create or change a user's vote for a target, with a per-chat rate limit."""
     if value not in (-1, 1):
         raise ValueError("Оценка должна быть +1 или -1.")
     if voter_id == target_id:
         raise ValueError("Нельзя оценивать самого себя.")
+    now_epoch = time.time()
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with db() as con:
         old = con.execute(
@@ -374,6 +443,14 @@ def cast_reputation_vote(chat_id: int, voter_id: int, target_id: int, value: int
         ).fetchone()
         if old and int(old["value"]) == value:
             return "unchanged"
+
+        limit = con.execute(
+            "SELECT last_vote_at FROM reputation_rate_limits WHERE chat_id=? AND voter_id=?",
+            (chat_id, voter_id),
+        ).fetchone()
+        if limit and now_epoch - float(limit["last_vote_at"]) < REPUTATION_VOTE_COOLDOWN_SECONDS:
+            return "rate_limited"
+
         con.execute(
             """
             INSERT INTO reputation_votes(chat_id,voter_id,target_id,value,created_at,updated_at)
@@ -382,6 +459,13 @@ def cast_reputation_vote(chat_id: int, voter_id: int, target_id: int, value: int
                 value=excluded.value, updated_at=excluded.updated_at
             """,
             (chat_id, voter_id, target_id, value, now, now),
+        )
+        con.execute(
+            """
+            INSERT INTO reputation_rate_limits(chat_id,voter_id,last_vote_at) VALUES(?,?,?)
+            ON CONFLICT(chat_id,voter_id) DO UPDATE SET last_vote_at=excluded.last_vote_at
+            """,
+            (chat_id, voter_id, now_epoch),
         )
     return "changed" if old else "created"
 
@@ -1805,6 +1889,12 @@ async def reputation_command(message: Message):
         if result == "unchanged":
             await message.reply("ℹ️ Вы уже поставили такую оценку этому участнику.")
             return
+        if result == "rate_limited":
+            await message.reply(
+                f"⏳ Оценивать репутацию можно не чаще одного раза в "
+                f"{REPUTATION_VOTE_COOLDOWN_SECONDS} секунд в этом чате."
+            )
+            return
 
     stats = get_reputation(message.chat.id, target.id)
     display_name = html.escape(target.full_name or "Участник")
@@ -1864,12 +1954,14 @@ async def router(message: Message):
             return
     if await apply_automatic_moderation(message):
         return
-    # XP is earned only for ordinary group text, never for commands or bot messages.
+    # XP is earned only for ordinary group text, never for commands, bot messages,
+    # control phrases, or repeated identical text used for farming.
     if (
         message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
         and not message.text.startswith("/")
         and len(message.text.strip()) >= 3
         and not is_control_message(message.text)
+        and not is_duplicate_xp_message(message.chat.id, message.from_user.id, message.text)
     ):
         try:
             before_profile = get_xp_profile(message.chat.id, message.from_user.id)
