@@ -654,3 +654,56 @@ def test_rp_action_keywords_reject_empty_and_overlong_values():
         main.normalize_rp_keywords(" , , ")
     with pytest.raises(ValueError, match="60"):
         main.normalize_rp_keywords("x" * 61)
+
+
+
+def test_reputation_votes_are_unique_changeable_and_chat_scoped(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "reputation.sqlite3"))
+    main.init_db()
+
+    assert main.cast_reputation_vote(-1001, 10, 20, 1) == "created"
+    assert main.cast_reputation_vote(-1001, 10, 20, 1) == "unchanged"
+    assert main.get_reputation(-1001, 20) == {"positive": 1, "negative": 0, "score": 1}
+
+    assert main.cast_reputation_vote(-1001, 10, 20, -1) == "changed"
+    assert main.get_reputation(-1001, 20) == {"positive": 0, "negative": 1, "score": -1}
+
+    # The same users in another group have independent reputation history.
+    assert main.cast_reputation_vote(-1002, 10, 20, 1) == "created"
+    assert main.get_reputation(-1002, 20) == {"positive": 1, "negative": 0, "score": 1}
+    assert main.get_reputation(-1001, 20) == {"positive": 0, "negative": 1, "score": -1}
+
+
+def test_reputation_rejects_self_votes_and_invalid_values(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "reputation.sqlite3"))
+    main.init_db()
+
+    with pytest.raises(ValueError, match="самого себя"):
+        main.cast_reputation_vote(-1001, 10, 10, 1)
+    with pytest.raises(ValueError, match="Оценка"):
+        main.cast_reputation_vote(-1001, 10, 20, 0)
+
+    with main.db() as con:
+        count = con.execute("SELECT COUNT(*) FROM reputation_votes").fetchone()[0]
+    assert count == 0
+
+
+def test_reputation_migration_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "reputation-migration.sqlite3"))
+    main.init_db()
+    main.init_db()
+
+    with main.db() as con:
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        migrations = {
+            row["version"] for row in con.execute("SELECT version FROM schema_migrations")
+        }
+        table_exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='reputation_votes'"
+        ).fetchone()
+
+    assert version >= 7
+    assert 7 in migrations
+    assert table_exists is not None
