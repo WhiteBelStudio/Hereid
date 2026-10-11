@@ -355,6 +355,39 @@ def xp_bio_text(profile: dict) -> str:
     bio = str(profile.get("bio", "") or "").strip()
     return html.escape(bio) if bio else "Пока не заполнено."
 
+def normalize_rp_keywords(raw_keywords: str) -> list[str]:
+    """Normalize and deduplicate comma-separated RP keywords consistently."""
+    keywords = []
+    seen = set()
+    for raw in str(raw_keywords or "").split(","):
+        keyword = " ".join(raw.casefold().split())
+        if not keyword or keyword in seen:
+            continue
+        if len(keyword) > 60:
+            raise ValueError("Каждое ключевое слово должно быть не длиннее 60 символов.")
+        seen.add(keyword)
+        keywords.append(keyword)
+    if not keywords:
+        raise ValueError("Укажите минимум одно ключевое слово.")
+    return keywords
+
+
+def find_rp_keyword_conflicts(con, chat_id: int, keywords: list[str],
+                              exclude_action_id: int | None = None) -> dict[str, str]:
+    """Find keywords already owned by another RP action in this chat."""
+    wanted = set(normalize_rp_keywords(", ".join(keywords)))
+    query = "SELECT id,name,keywords FROM rp_actions WHERE chat_id=?"
+    params = [chat_id]
+    if exclude_action_id is not None:
+        query += " AND id<>?"
+        params.append(exclude_action_id)
+    conflicts = {}
+    for row in con.execute(query, params).fetchall():
+        for existing in normalize_rp_keywords(row["keywords"]):
+            if existing in wanted:
+                conflicts[existing] = row["name"]
+    return conflicts
+
 
 LEVEL_XP_BASE = 100
 LEVEL_XP_INCREMENT = 25
@@ -1947,11 +1980,25 @@ async def router(message: Message):
                                 (message.chat.id, message.from_user.id))
                     con.commit()
             elif field == "keywords":
-                keywords = list(dict.fromkeys(word.strip().casefold() for word in value.split(",") if word.strip()))
-                if not keywords or any(len(word) > 60 for word in keywords):
-                    await message.reply("Укажите минимум одно ключевое слово; каждое должно быть не длиннее 60 символов.")
+                try:
+                    keywords = normalize_rp_keywords(value)
+                except ValueError as exc:
+                    await message.reply(html.escape(str(exc)))
                     return
                 with db() as con:
+                    conflicts = find_rp_keyword_conflicts(
+                        con, message.chat.id, keywords, exclude_action_id=action_id
+                    )
+                    if conflicts:
+                        details = ", ".join(
+                            f"«{html.escape(word)}» — «{html.escape(name)}»"
+                            for word, name in sorted(conflicts.items())
+                        )
+                        await message.reply(
+                            "⛔ Эти ключевые слова уже принадлежат другим действиям: "
+                            f"{details}. Выберите другие слова."
+                        )
+                        return
                     cur = con.execute(
                         "UPDATE rp_actions SET keywords=? WHERE chat_id=? AND id=?",
                         (", ".join(keywords), message.chat.id, action_id),
@@ -2005,13 +2052,26 @@ async def router(message: Message):
                 await message.reply("Неверный формат. Используйте: <code>Название | ключ1, ключ2 | Ответ бота</code> или отправьте «отмена».")
                 return
             name, raw_keywords, response = parts
-            keywords = [word.strip().lower() for word in raw_keywords.split(",") if word.strip()]
-            if not keywords or len(name) > 80 or len(response) > 1000 or any(len(word) > 60 for word in keywords):
-                await message.reply("Проверьте данные: название до 80 символов, ключевое слово до 60, ответ до 1000; нужен минимум один ключ.")
+            try:
+                keywords = normalize_rp_keywords(raw_keywords)
+            except ValueError as exc:
+                await message.reply(html.escape(str(exc)))
                 return
-            if len(set(keywords)) != len(keywords):
-                keywords = list(dict.fromkeys(keywords))
+            if len(name) > 80 or len(response) > 1000:
+                await message.reply("Проверьте данные: название — до 80 символов, ответ — до 1000 символов.")
+                return
             with db() as con:
+                conflicts = find_rp_keyword_conflicts(con, message.chat.id, keywords)
+                if conflicts:
+                    details = ", ".join(
+                        f"«{html.escape(word)}» — «{html.escape(action_name)}»"
+                        for word, action_name in sorted(conflicts.items())
+                    )
+                    await message.reply(
+                        "⛔ Эти ключевые слова уже используются другими RP-действиями: "
+                        f"{details}. Укажите уникальные слова."
+                    )
+                    return
                 try:
                     cur = con.execute(
                         "INSERT INTO rp_actions(chat_id,name,keywords,response,created_by,created_at) VALUES(?,?,?,?,?,?)",
