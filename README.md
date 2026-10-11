@@ -12,7 +12,7 @@ Telegram group moderation bot with Russian commands, role-based administration, 
 ## Pterodactyl deployment
 
 1. Create a Python server using Python 3.12.
-2. Upload/clone the repository into the server's working directory. Ensure `main.py`, `start.py`, and `requirements.txt` are in the same directory.
+2. Upload/clone the repository into the server's working directory. Ensure `main.py`, `profile.py`, `start.py`, and `requirements.txt` are in the same directory.
 3. Set the Pterodactyl Startup command to:
    ```bash
    python start.py
@@ -27,7 +27,7 @@ Telegram group moderation bot with Russian commands, role-based administration, 
 8. Start the server and inspect the console. A successful connection logs the bot username and ID. If startup reports a network error, verify outbound access and the proxy from the hosting provider; do not repeatedly rotate tokens for a network issue.
 9. Restart once and confirm the bot reconnects and existing settings/actions remain in the SQLite database. Back up the database before upgrades.
 
-The startup script installs/checks requirements, validates the presence of `BOT_TOKEN`, prepares the database directory, and then starts the bot. It does not print the bot token or proxy URL. Do not delete `heradelegend.db` to troubleshoot.
+The startup script downloads `main.py` and `profile.py` directly from `https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main/` before launch, validates both files, then installs/checks requirements, validates `BOT_TOKEN`, prepares the database directory, and starts the bot. If GitHub is unavailable, it falls back to existing local copies when both files exist. It never changes `.env` or the SQLite database and does not print the bot token or proxy URL. Do not delete `heradelegend.db` to troubleshoot.
 
 ## Telegram group setup
 
@@ -59,7 +59,7 @@ Prefer replying to the target user's message when possible:
 
 XP rules: eligible text messages award **5 XP** at most once every **60 seconds** per user and group. Commands, bots, private chats, and recognized control/help messages do not award XP. XP profiles are stored per group in SQLite; schema migrations preserve existing records. Leveling becomes progressively harder: level 2 requires 100 XP, level 3 requires 225 total XP, level 4 requires 375 total XP, and each next level costs **25 XP more** than the previous level. `/xp` shows the level, progress bar, XP needed for the next level, and your «О себе» description. Use `/setbio ТЕКСТ` to create or edit a description of up to **250 characters**, `/mybio` to view it, and `/setbio очистить` to remove it. Descriptions are stored separately for each group, trimmed, and HTML-escaped before display. Use `/rewards` (or write «награды») to see unlocked decorative rewards and the nearest next reward. Level rewards unlock at levels 2, 5, 10, 25, 50, 100, 250, and 500; activity rewards unlock at 10, 50, 100, 250, 500, and 1000 XP-eligible messages. Rewards are derived from saved XP/message counters, require no XP spending, and do not need a separate claim, so they remain consistent after restarts. Level-ups are announced in the group; every 100th level (100, 200, 300, and onward) receives a special milestone celebration, with custom messages for levels 100–1000 and generated milestone-specific wording for higher levels.
 
-## RP-действия и ключевые слова
+## Профиль участника\n\nКоманда `/profile` (также `/myprofile` и `/профиль`) показывает карточку участника: имя, username, Telegram ID, уровень, XP, прогресс уровня, количество учтённых сообщений и описание «О себе». Без ответа на сообщение открывается собственный профиль; если отправить команду ответом на сообщение другого участника, откроется его профиль в текущем чате. XP и описание разделены по чатам. Форматирование вынесено в отдельный модуль `profile.py`, который `start.py` также скачивает с GitHub перед запуском.\n\n## RP-действия и ключевые слова
 
 RP-действия создаются и редактируются через админ-панель. При создании используйте формат:
 
