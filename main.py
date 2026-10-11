@@ -24,6 +24,8 @@ from aiogram.types import (
     InlineKeyboardMarkup, Message,
 )
 
+from profile import format_participant_profile
+
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", "heradelegend.db")
 PROXY_URL = os.getenv("TELEGRAM_PROXY", "").strip() or None
@@ -1594,6 +1596,31 @@ async def xp_command(message: Message):
         f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\n"
         f"📝 О себе: {xp_bio_text(profile)}\n\n"
         "Пиши по делу и участвуй в жизни чата — опыт начисляется постепенно."
+    )
+
+
+@dp.message(Command(commands=["profile", "myprofile", "профиль"]))
+async def participant_profile_command(message: Message):
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("👤 Полный профиль доступен в групповом чате, где включён бот.")
+        return
+
+    # Reply to a member's message to inspect their profile; otherwise show your own.
+    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+    if not target:
+        await message.answer("Не удалось определить участника. Ответьте командой на сообщение пользователя.")
+        return
+
+    profile = get_xp_profile(message.chat.id, target.id)
+    progress = xp_level_progress(profile["xp"])
+    await message.answer(
+        format_participant_profile(
+            display_name=target.full_name or "Участник",
+            username=target.username or "",
+            user_id=target.id,
+            profile=profile,
+            progress=progress,
+        )
     )
 
 
