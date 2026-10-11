@@ -1,4 +1,4 @@
-"""Reliable Pterodactyl entrypoint for heradeLegend."""
+"""GitHub-powered Pterodactyl entrypoint for Hereid."""
 from __future__ import annotations
 
 import os
@@ -8,96 +8,95 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+GITHUB_RAW = "https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main"
+
+
+def download_file(root: Path, filename: str, required_marker: bytes = b"") -> None:
+    """Download and validate a single project file before replacing its local copy."""
+    url = f"{GITHUB_RAW}/{filename}"
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Hereid-Pterodactyl-Launcher"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = response.read()
+
+    if not data:
+        raise ValueError(f"{filename} download was empty")
+    if required_marker and required_marker not in data:
+        raise ValueError(f"{filename} failed basic validation")
+
+    temp = root / f".{filename}.download"
+    temp.write_bytes(data)
+    temp.replace(root / filename)
+
 
 def main() -> int:
     root = Path(__file__).resolve().parent
     os.chdir(root)
 
-    # Download the application entry module and profile module directly from GitHub.
-    # Stage and validate both files before replacing either, so a partial download cannot
-    # leave a mixed version. Never touch .env or the SQLite database.
-    auto_update = os.getenv("AUTO_UPDATE_MAIN", "1").strip().lower() not in {"0", "false", "no"}
-    app_files = {
-        "main.py": b"async def main",
-        "profile.py": b"def format_participant_profile",
-    }
-    if auto_update:
-        staged: dict[str, Path] = {}
+    # This launcher is the only project file that needs to be uploaded manually.
+    # Secrets and the database are never downloaded from GitHub or overwritten.
+    if os.getenv("AUTO_UPDATE_MAIN", "1").strip().lower() not in {"0", "false", "no"}:
+        files = {
+            "requirements.txt": b"aiogram",
+            "main.py": b"async def main",
+            "profile.py": b"def format_participant_profile",
+        }
         try:
-            for filename, required_marker in app_files.items():
-                source_url = f"https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main/{filename}"
-                request = urllib.request.Request(
-                    source_url,
-                    headers={"User-Agent": "heradeLegend-Pterodactyl-Updater"},
-                )
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    downloaded = response.read()
-                if not downloaded or required_marker not in downloaded:
-                    raise ValueError(f"downloaded {filename} failed basic validation")
-                temporary_file = root / f".{filename}.download"
-                temporary_file.write_bytes(downloaded)
-                staged[filename] = temporary_file
-
-            # All required files downloaded and validated: replace the local versions.
-            for filename, temporary_file in staged.items():
-                temporary_file.replace(root / filename)
-            print("[startup] Updated main.py and profile.py directly from GitHub.")
+            for filename, marker in files.items():
+                download_file(root, filename, marker)
+            print("[startup] Downloaded requirements.txt, main.py and profile.py from GitHub.")
         except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
-            for temporary_file in staged.values():
-                try:
-                    temporary_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            missing = [filename for filename in app_files if not (root / filename).is_file()]
+            missing = [name for name in files if not (root / name).is_file()]
             if missing:
                 print(
-                    f"FATAL: GitHub update failed ({type(exc).__name__}) and required local "
-                    f"file(s) are missing: {', '.join(missing)}.",
+                    f"FATAL: GitHub download failed ({type(exc).__name__}); "
+                    f"missing files: {', '.join(missing)}.",
                     file=sys.stderr,
                 )
                 return 2
             print(
-                f"[startup] WARNING: GitHub update failed ({type(exc).__name__}); "
-                "using the existing local application files.",
+                f"[startup] WARNING: GitHub download failed ({type(exc).__name__}); "
+                "using existing local files.",
                 file=sys.stderr,
             )
 
     requirements = root / "requirements.txt"
     if not requirements.is_file():
-        print("FATAL: requirements.txt is missing; upload the complete repository.", file=sys.stderr)
+        print("FATAL: requirements.txt is missing.", file=sys.stderr)
         return 2
 
-    print("[startup] Installing/checking Python dependencies...")
+    print("[startup] Installing/checking dependencies...")
     try:
         subprocess.run(
             [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
+                sys.executable, "-m", "pip", "install",
                 "--disable-pip-version-check",
                 "--no-warn-script-location",
-                "-r",
-                str(requirements),
+                "-r", str(requirements),
             ],
             check=True,
         )
     except subprocess.CalledProcessError as exc:
-        print(f"FATAL: dependency installation failed (exit code {exc.returncode}).", file=sys.stderr)
+        print(
+            f"FATAL: dependency installation failed (exit code {exc.returncode}).",
+            file=sys.stderr,
+        )
         return exc.returncode or 1
 
     try:
         from dotenv import load_dotenv
         load_dotenv(root / ".env")
     except Exception as exc:
-        print(f"FATAL: could not load environment configuration ({type(exc).__name__}).", file=sys.stderr)
+        print(f"FATAL: could not load configuration ({type(exc).__name__}).", file=sys.stderr)
         return 2
 
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token or token == "PASTE_TOKEN_FROM_BOTFATHER":
         print(
-            "FATAL: BOT_TOKEN is missing. Set it in Pterodactyl Startup variables "
-            "or in a local .env file. Never commit a real token to GitHub.",
+            "FATAL: BOT_TOKEN is missing. Set BOT_TOKEN in Pterodactyl Startup variables. "
+            "Do not commit a real token to GitHub.",
             file=sys.stderr,
         )
         return 2
@@ -115,21 +114,21 @@ def main() -> int:
 
     print(f"[startup] Python: {sys.version.split()[0]}")
     print(f"[startup] Database: {db_path}")
-    print("[startup] Starting Telegram bot; token and proxy credentials are never printed.")
+    print("[startup] Starting Telegram bot.")
 
     try:
-        from main import main as run_bot
         import asyncio
+        from main import main as run_bot
         asyncio.run(run_bot())
     except KeyboardInterrupt:
         print("[startup] Bot stopped.")
         return 0
     except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-        return code
+        return exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:
-        print(f"FATAL: bot stopped with an unexpected error ({type(exc).__name__}).", file=sys.stderr)
+        print(f"FATAL: bot stopped ({type(exc).__name__}).", file=sys.stderr)
         raise
+
     return 0
 
 
