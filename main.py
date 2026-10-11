@@ -190,6 +190,16 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(chat_id,user_id)
         );
+        CREATE TABLE IF NOT EXISTS reputation_votes(
+          chat_id INTEGER NOT NULL,
+          voter_id INTEGER NOT NULL,
+          target_id INTEGER NOT NULL,
+          value INTEGER NOT NULL CHECK(value IN (-1, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id, voter_id, target_id),
+          CHECK(voter_id <> target_id)
+        );
         """)
         # Repair legacy moderation tables in place before creating indexes that
         # reference their columns. Existing rows remain active by default.
@@ -239,6 +249,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_roles_chat_role ON role_assignments(chat_id,role)",
             "CREATE INDEX IF NOT EXISTS idx_rp_actions_chat_enabled ON rp_actions(chat_id,is_enabled)",
             "CREATE INDEX IF NOT EXISTS idx_xp_profiles_chat_xp ON xp_profiles(chat_id,xp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_reputation_target ON reputation_votes(chat_id,target_id,value)",
         )
         for statement in indexes:
             con.execute(statement)
@@ -274,9 +285,14 @@ def init_db():
             (6, migration_time,
              "Add persistent chat-scoped about-me text to XP profiles without deleting existing data"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (7, migration_time,
+             "Add per-chat reputation votes with one vote per voter and target"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 6:
-            con.execute("PRAGMA user_version=6")
+        if current_version < 7:
+            con.execute("PRAGMA user_version=7")
         con.commit()
 
 
@@ -323,6 +339,51 @@ def get_xp_profile(chat_id: int, user_id: int):
         "xp": 0, "eligible_messages": 0, "display_name": "", "username": "", "bio": ""
     }
 
+
+
+
+def get_reputation(chat_id: int, user_id: int) -> dict[str, int]:
+    """Return positive, negative, and net reputation for a participant in one chat."""
+    with db() as con:
+        row = con.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN value=1 THEN 1 ELSE 0 END), 0) AS positive,
+                COALESCE(SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END), 0) AS negative
+            FROM reputation_votes
+            WHERE chat_id=? AND target_id=?
+            """,
+            (chat_id, user_id),
+        ).fetchone()
+    positive = int(row["positive"])
+    negative = int(row["negative"])
+    return {"positive": positive, "negative": negative, "score": positive - negative}
+
+
+def cast_reputation_vote(chat_id: int, voter_id: int, target_id: int, value: int) -> str:
+    """Create or change a user's vote for a target, scoped to a single chat."""
+    if value not in (-1, 1):
+        raise ValueError("Оценка должна быть +1 или -1.")
+    if voter_id == target_id:
+        raise ValueError("Нельзя оценивать самого себя.")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db() as con:
+        old = con.execute(
+            "SELECT value FROM reputation_votes WHERE chat_id=? AND voter_id=? AND target_id=?",
+            (chat_id, voter_id, target_id),
+        ).fetchone()
+        if old and int(old["value"]) == value:
+            return "unchanged"
+        con.execute(
+            """
+            INSERT INTO reputation_votes(chat_id,voter_id,target_id,value,created_at,updated_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(chat_id,voter_id,target_id) DO UPDATE SET
+                value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (chat_id, voter_id, target_id, value, now, now),
+        )
+    return "changed" if old else "created"
 
 XP_BIO_MAX_LENGTH = 250
 
@@ -1309,6 +1370,8 @@ COMMANDS = (
     "<code>/rewards</code> — список наград за уровни и активность; награды открываются автоматически.\n"
     "<code>/setbio ТЕКСТ</code> — заполнить или изменить «О себе» (до 250 символов).\n"
     "<code>/setbio очистить</code> — удалить описание. <code>/mybio</code> — посмотреть его.\n"
+    "<code>/rep +</code> или <code>/rep -</code> в ответ на сообщение — оценить репутацию участника.\n"
+    "<code>/rep</code> в ответ на сообщение — посмотреть репутацию участника.\n"
     "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\n\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
@@ -1694,6 +1757,66 @@ async def top_xp_command(message: Message):
         await message.answer("🏆 Рейтинг XP доступен в групповом чате.")
         return
     await message.answer(xp_leaderboard_text(message.chat.id))
+
+
+
+
+@dp.message(Command(commands=["rep", "репутация"]))
+async def reputation_command(message: Message):
+    if not message.from_user:
+        return
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("🏆 Репутация работает внутри группового чата.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    argument = parts[1].strip().casefold() if len(parts) > 1 else ""
+    if argument in {"+", "плюс", "положительно", "1"}:
+        value = 1
+    elif argument in {"-", "минус", "отрицательно", "-1"}:
+        value = -1
+    elif not argument:
+        value = 0
+    else:
+        await message.reply(
+            "Использование: ответьте на сообщение участника командой "
+            "<code>/rep +</code> или <code>/rep -</code>. "
+            "Без знака команда показывает репутацию."
+        )
+        return
+
+    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+    if not target or target.is_bot:
+        await message.reply("⚠️ Не удалось определить участника для репутации.")
+        return
+
+    if value:
+        if not message.reply_to_message:
+            await message.reply("Ответьте командой на сообщение участника: <code>/rep +</code> или <code>/rep -</code>.")
+            return
+        if target.id == message.from_user.id:
+            await message.reply("⛔ Нельзя повышать или понижать собственную репутацию.")
+            return
+        try:
+            result = cast_reputation_vote(message.chat.id, message.from_user.id, target.id, value)
+        except ValueError as exc:
+            await message.reply(html.escape(str(exc)))
+            return
+        if result == "unchanged":
+            await message.reply("ℹ️ Вы уже поставили такую оценку этому участнику.")
+            return
+
+    stats = get_reputation(message.chat.id, target.id)
+    display_name = html.escape(target.full_name or "Участник")
+    status = "Оценка сохранена. " if value else ""
+    await message.reply(
+        f"{'✅ ' + status if value else ''}🏆 <b>Репутация участника</b>\n\n"
+        f"👤 {display_name}\n"
+        f"🆔 <code>{target.id}</code>\n"
+        f"👍 Положительные: <b>{stats['positive']}</b>\n"
+        f"👎 Отрицательные: <b>{stats['negative']}</b>\n"
+        f"⭐ Итоговый рейтинг: <b>{stats['score']:+d}</b>"
+    )
 
 
 @dp.message(F.text)
