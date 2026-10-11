@@ -768,3 +768,127 @@ def test_xp_duplicate_filter_prunes_old_fingerprints(tmp_path, monkeypatch):
     with main.db() as con:
         count = con.execute("SELECT COUNT(*) FROM xp_message_fingerprints").fetchone()[0]
     assert count == 1
+
+
+
+def test_moderation_settings_defaults_and_persisted_updates(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "moderation-settings.sqlite3"))
+    main.init_db()
+
+    defaults = main.get_moderation_settings(-100701)
+    assert defaults["antispam_enabled"] == 1
+    assert defaults["block_links"] == 0
+    assert defaults["flood_limit"] == 5
+    assert defaults["flood_window_seconds"] == 8
+    assert defaults["mute_duration_minutes"] == 5
+
+    with main.db() as con:
+        con.execute(
+            "UPDATE moderation_settings SET antispam_enabled=0,block_links=1,flood_limit=7,"
+            "flood_window_seconds=12,mute_duration_minutes=10 WHERE chat_id=?",
+            (-100701,),
+        )
+
+    saved = main.get_moderation_settings(-100701)
+    assert (saved["antispam_enabled"], saved["block_links"]) == (0, 1)
+    assert (saved["flood_limit"], saved["flood_window_seconds"]) == (7, 12)
+    assert saved["mute_duration_minutes"] == 10
+    assert "выключён" in main.moderation_settings_text(-100701)
+    assert "включена" in main.moderation_settings_text(-100701)
+
+
+def test_chat_settings_text_escapes_html_and_keyboard_respects_permissions(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "chat-settings-ui.sqlite3"))
+    main.init_db()
+
+    with main.db() as con:
+        con.execute(
+            "UPDATE chat_settings SET welcome_enabled=1,welcome_text=?,goodbye_text=?,rules_text=? "
+            "WHERE chat_id=?",
+            ("<b>Привет</b>", "<i>Пока</i>", "<script>rules</script>", -100702),
+        )
+
+    rendered = main.chat_settings_text(-100702)
+    assert "&lt;b&gt;Привет&lt;/b&gt;" in rendered
+    assert "&lt;i&gt;Пока&lt;/i&gt;" in rendered
+    assert "&lt;script&gt;rules&lt;/script&gt;" in rendered
+
+    manager_keyboard = main.chat_settings_keyboard(-100702, True)
+    viewer_keyboard = main.chat_settings_keyboard(-100702, False)
+    manager_callbacks = [button.callback_data for row in manager_keyboard.inline_keyboard for button in row]
+    viewer_callbacks = [button.callback_data for row in viewer_keyboard.inline_keyboard for button in row]
+    assert "chatset:toggle:welcome" in manager_callbacks
+    assert "chatset:edit:rules_text" in manager_callbacks
+    assert not any(value.startswith("chatset:toggle:") for value in viewer_callbacks)
+    assert not any(value.startswith("chatset:edit:") for value in viewer_callbacks)
+
+
+def test_rp_catalog_and_item_view_are_chat_scoped_and_escape_html(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "rp-catalog.sqlite3"))
+    main.init_db()
+
+    with main.db() as con:
+        con.execute(
+            "INSERT INTO rp_actions(chat_id,name,keywords,response,created_by,created_at,is_enabled) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (-100703, "<обнять>", "обнять, hugs", "<b>обнял</b>", 10, "2026-10-11T00:00:00+00:00", 1),
+        )
+        con.execute(
+            "INSERT INTO rp_actions(chat_id,name,keywords,response,created_by,created_at,is_enabled) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (-100704, "Other chat", "hello", "other response", 10, "2026-10-11T00:00:00+00:00", 1),
+        )
+        action_id = con.execute(
+            "SELECT id FROM rp_actions WHERE chat_id=?", (-100703,)
+        ).fetchone()["id"]
+
+    catalog = main.rp_catalog(-100703)
+    assert "&lt;обнять&gt;" in catalog
+    assert "&lt;b&gt;обнял&lt;/b&gt;" in catalog
+    assert "Other chat" not in catalog
+
+    item_text, enabled = main.rp_item_view(-100703, action_id)
+    assert enabled is True
+    assert "&lt;обнять&gt;" in item_text
+    assert "&lt;b&gt;обнял&lt;/b&gt;" in item_text
+    assert main.rp_item_view(-100704, action_id) == (None, None)
+
+
+def test_action_log_pagination_is_chat_scoped_and_escapes_untrusted_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "action-log.sqlite3"))
+    main.init_db()
+
+    for index in range(5):
+        main.log_action(
+            -100705, 900 + index, 800, "test_action", f"reason {index}",
+        )
+    main.log_action(-100706, 999, 888, "foreign_action", "foreign reason")
+    with main.db() as con:
+        con.execute(
+            "UPDATE actions SET action=?,reason=? WHERE chat_id=? AND user_id=?",
+            ("<script>", "<b>unsafe</b>", -100705, 904),
+        )
+
+    first_page = main.action_log_page(-100705, page=0, page_size=2)
+    last_page = main.action_log_page(-100705, page=99, page_size=2)
+    assert "страница 1/3" in first_page
+    assert "страница 3/3" in last_page
+    assert "foreign_action" not in first_page
+    assert "&lt;script&gt;" in first_page
+    assert "&lt;b&gt;unsafe&lt;/b&gt;" in first_page
+    assert "reason 4" in first_page
+
+
+def test_statistics_text_counts_only_selected_chat_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "statistics.sqlite3"))
+    main.init_db()
+    main.log_action(-100707, 21, 31, "mute", "test")
+    main.record("warnings", -100707, 21, 31, "warning")
+    main.log_action(-100708, 22, 32, "ban", "other chat")
+
+    stats = main.statistics_text(-100707)
+    assert "Всего записей в журнале: <b>1</b>" in stats
+    assert "Активных предупреждений: <b>1</b>" in stats
+    assert "mute" in stats
+    assert "foreign" not in stats
+    assert "ban" not in stats
