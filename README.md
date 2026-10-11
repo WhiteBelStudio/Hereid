@@ -78,7 +78,7 @@ Run the same checks locally:
 ```bash
 python -m pip install -r requirements.txt
 python -m pip install pytest
-python -m py_compile main.py start.py tests/test_helpers.py
+python -m py_compile main.py profile.py start.py tests/test_helpers.py tests/test_profile.py
 BOT_TOKEN=123456:TEST_TOKEN_FOR_AUTOMATED_TESTS python -m pytest -q
 ```
 
