@@ -659,12 +659,15 @@ def test_rp_action_keywords_reject_empty_and_overlong_values():
 
 def test_reputation_votes_are_unique_changeable_and_chat_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "reputation.sqlite3"))
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
     main.init_db()
 
     assert main.cast_reputation_vote(-1001, 10, 20, 1) == "created"
     assert main.cast_reputation_vote(-1001, 10, 20, 1) == "unchanged"
     assert main.get_reputation(-1001, 20) == {"positive": 1, "negative": 0, "score": 1}
 
+    now[0] += main.REPUTATION_VOTE_COOLDOWN_SECONDS
     assert main.cast_reputation_vote(-1001, 10, 20, -1) == "changed"
     assert main.get_reputation(-1001, 20) == {"positive": 0, "negative": 1, "score": -1}
 
@@ -703,7 +706,65 @@ def test_reputation_migration_is_idempotent(tmp_path, monkeypatch):
         table_exists = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='reputation_votes'"
         ).fetchone()
+        rate_table_exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='reputation_rate_limits'"
+        ).fetchone()
+        fingerprint_table_exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='xp_message_fingerprints'"
+        ).fetchone()
 
-    assert version >= 7
-    assert 7 in migrations
+    assert version >= 8
+    assert 7 in migrations and 8 in migrations
     assert table_exists is not None
+    assert rate_table_exists is not None
+    assert fingerprint_table_exists is not None
+
+
+def test_reputation_vote_cooldown_blocks_spam_and_is_chat_scoped(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "reputation-rate.sqlite3"))
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    main.init_db()
+
+    assert main.cast_reputation_vote(-1001, 10, 20, 1) == "created"
+    assert main.cast_reputation_vote(-1001, 10, 20, 1) == "unchanged"
+    assert main.cast_reputation_vote(-1001, 10, 21, 1) == "rate_limited"
+    assert main.get_reputation(-1001, 21)["positive"] == 0
+
+    # Rate limit is per group, not global across all chats.
+    assert main.cast_reputation_vote(-1002, 10, 21, 1) == "created"
+    now[0] += main.REPUTATION_VOTE_COOLDOWN_SECONDS
+    assert main.cast_reputation_vote(-1001, 10, 21, 1) == "created"
+    # Vote changes are rate-limited too, preventing rapid reputation flipping.
+    assert main.cast_reputation_vote(-1001, 10, 20, -1) == "rate_limited"
+    now[0] += main.REPUTATION_VOTE_COOLDOWN_SECONDS
+    assert main.cast_reputation_vote(-1001, 10, 20, -1) == "changed"
+
+
+def test_duplicate_xp_message_filter_blocks_repeats_and_is_chat_scoped(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xp-fingerprints.sqlite3"))
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    main.init_db()
+
+    assert main.is_duplicate_xp_message(-1001, 10, "Привет всем") is False
+    assert main.is_duplicate_xp_message(-1001, 10, "  ПРИВЕТ   ВСЕМ  ") is True
+    assert main.is_duplicate_xp_message(-1001, 11, "Привет всем") is False
+    assert main.is_duplicate_xp_message(-1002, 10, "Привет всем") is False
+
+    now[0] += main.XP_DUPLICATE_MESSAGE_WINDOW_SECONDS + 1
+    assert main.is_duplicate_xp_message(-1001, 10, "Привет всем") is False
+
+
+def test_xp_duplicate_filter_prunes_old_fingerprints(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xp-prune.sqlite3"))
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(main.time, "time", lambda: now[0])
+    main.init_db()
+
+    assert main.is_duplicate_xp_message(-1001, 10, "Original message") is False
+    now[0] += main.XP_FINGERPRINT_RETENTION_SECONDS + 1
+    assert main.is_duplicate_xp_message(-1001, 10, "A different message") is False
+    with main.db() as con:
+        count = con.execute("SELECT COUNT(*) FROM xp_message_fingerprints").fetchone()[0]
+    assert count == 1
