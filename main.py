@@ -1269,8 +1269,8 @@ COMMANDS = (
     "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code>, <code>/топопыта</code>, <code>/топуровней</code> — рейтинг участников.\n"
     "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"
     "<code>/rewards</code> — список наград за уровни и активность; награды открываются автоматически.\n"
-    "<code>/setbio ТЕКСТ</code> — заполнить или изменить «О себе» (до 250 символов).\\n"
-    "<code>/setbio очистить</code> — удалить описание. <code>/mybio</code> — посмотреть его.\\n"
+    "<code>/setbio ТЕКСТ</code> — заполнить или изменить «О себе» (до 250 символов).\n"
+    "<code>/setbio очистить</code> — удалить описание. <code>/mybio</code> — посмотреть его.\n"
     "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\n\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
@@ -1573,8 +1573,8 @@ async def set_bio_command(message: Message):
     bio = raw_bio.strip()
     if not bio:
         await message.answer(
-            f"📝 Напиши описание после команды. Максимум — {XP_BIO_MAX_LENGTH} символов.\\n"
-            "Пример: <code>/setbio Люблю игры и общение</code>\\n"
+            f"📝 Напиши описание после команды. Максимум — {XP_BIO_MAX_LENGTH} символов.\n"
+            "Пример: <code>/setbio Люблю игры и общение</code>\n"
             "Чтобы удалить описание: <code>/setbio очистить</code>"
         )
         return
@@ -1593,8 +1593,8 @@ async def set_bio_command(message: Message):
         message.from_user.full_name or "Участник", message.from_user.username or "",
     )
     await message.answer(
-        "✅ <b>Описание сохранено!</b>\\n"
-        f"📝 {html.escape(bio)}\\n\\n"
+        "✅ <b>Описание сохранено!</b>\n"
+        f"📝 {html.escape(bio)}\n\n"
         "Посмотреть описание: <code>/mybio</code>. Изменить его можно командой <code>/setbio ТЕКСТ</code>."
     )
 
@@ -1609,8 +1609,8 @@ async def my_bio_command(message: Message):
     profile = get_xp_profile(message.chat.id, message.from_user.id)
     display_name = html.escape(message.from_user.full_name or "Участник")
     await message.answer(
-        f"📝 <b>О СЕБЕ — {display_name}</b>\\n\\n"
-        f"{xp_bio_text(profile)}\\n\\n"
+        f"📝 <b>О СЕБЕ — {display_name}</b>\n\n"
+        f"{xp_bio_text(profile)}\n\n"
         "Изменить: <code>/setbio ТЕКСТ</code> · Удалить: <code>/setbio очистить</code>"
     )
 
