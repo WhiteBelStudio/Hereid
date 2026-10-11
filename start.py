@@ -75,56 +75,49 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     os.chdir(root)
 
-    auto_update = (
-        os.getenv("AUTO_UPDATE_MAIN", "1").strip().lower()
-        not in {"0", "false", "no"}
-    )
+    # GitHub is the source of truth. Never start a stale local copy when
+    # downloading the current source fails.
     files = {
         "requirements.txt": b"aiogram",
         "main.py": b"async def main",
         "profile.py": b"def format_participant_profile",
     }
+    staged_data: dict[str, bytes] = {}
+    staged_paths: dict[str, Path] = {}
+    try:
+        # Download and validate every required file before replacing any file.
+        for filename, marker in files.items():
+            data = download_bytes(filename, marker)
+            if filename.endswith(".py"):
+                compile(data, filename, "exec")
+            staged_data[filename] = data
 
-    if auto_update:
-        staged_data: dict[str, bytes] = {}
-        staged_paths: dict[str, Path] = {}
-        try:
-            # Fetch and validate everything before replacing any app file.
-            for filename, marker in files.items():
-                staged_data[filename] = download_bytes(filename, marker)
+        for filename, data in staged_data.items():
+            temp_path = root / f".{filename}.download"
+            temp_path.write_bytes(data)
+            staged_paths[filename] = temp_path
 
-            for filename, data in staged_data.items():
-                temp_path = root / f".{filename}.download"
-                temp_path.write_bytes(data)
-                staged_paths[filename] = temp_path
+        for filename, temp_path in staged_paths.items():
+            temp_path.replace(root / filename)
 
-            for filename, temp_path in staged_paths.items():
-                temp_path.replace(root / filename)
-
-            print(
-                f"[startup] Downloaded project files from "
-                f"{OWNER}/{REPO}@{BRANCH}."
-            )
-        except Exception as exc:
-            for filename in files:
-                try:
-                    (root / f".{filename}.download").unlink(missing_ok=True)
-                except OSError:
-                    pass
-            missing = [name for name in files if not (root / name).is_file()]
-            if missing:
-                print(f"FATAL: GitHub update failed: {exc}", file=sys.stderr)
-                print(
-                    "Check repository visibility, GITHUB_TOKEN permissions, "
-                    "branch name, and outbound HTTPS/DNS access.",
-                    file=sys.stderr,
-                )
-                return 2
-            print(
-                f"[startup] WARNING: GitHub update failed ({exc}); "
-                "using existing local files.",
-                file=sys.stderr,
-            )
+        print(
+            f"[startup] Downloaded and validated source from "
+            f"{OWNER}/{REPO}@{BRANCH}."
+        )
+    except Exception as exc:
+        for filename in files:
+            try:
+                (root / f".{filename}.download").unlink(missing_ok=True)
+            except OSError:
+                pass
+        print(f"FATAL: GitHub source download/validation failed: {exc}", file=sys.stderr)
+        print(
+            "The bot will not start from stale local source. Check repository "
+            "visibility, GITHUB_TOKEN permissions, branch name, and outbound "
+            "HTTPS/DNS access.",
+            file=sys.stderr,
+        )
+        return 2
 
     requirements = root / "requirements.txt"
     if not requirements.is_file():
