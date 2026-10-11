@@ -793,7 +793,7 @@ def test_moderation_settings_defaults_and_persisted_updates(tmp_path, monkeypatc
     assert (saved["antispam_enabled"], saved["block_links"]) == (0, 1)
     assert (saved["flood_limit"], saved["flood_window_seconds"]) == (7, 12)
     assert saved["mute_duration_minutes"] == 10
-    assert "выключён" in main.moderation_settings_text(-100701)
+    assert "выключен" in main.moderation_settings_text(-100701)
     assert "включена" in main.moderation_settings_text(-100701)
 
 
@@ -870,8 +870,8 @@ def test_action_log_pagination_is_chat_scoped_and_escapes_untrusted_text(tmp_pat
             ("<script>", "<b>unsafe</b>", -100705, 904),
         )
 
-    first_page = main.action_log_page(-100705, page=0, page_size=2)
-    last_page = main.action_log_page(-100705, page=99, page_size=2)
+    first_page, _ = main.action_log_page(-100705, page=0, page_size=2)
+    last_page, _ = main.action_log_page(-100705, page=99, page_size=2)
     assert "страница 1/3" in first_page
     assert "страница 3/3" in last_page
     assert "foreign_action" not in first_page
