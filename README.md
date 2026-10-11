@@ -59,6 +59,14 @@ Prefer replying to the target user's message when possible:
 
 XP rules: eligible text messages award **5 XP** at most once every **60 seconds** per user and group. Commands, bots, private chats, and recognized control/help messages do not award XP. XP profiles are stored per group in SQLite; schema migrations preserve existing records. Leveling becomes progressively harder: level 2 requires 100 XP, level 3 requires 225 total XP, level 4 requires 375 total XP, and each next level costs **25 XP more** than the previous level. `/xp` shows the level, progress bar, XP needed for the next level, and your «О себе» description. Use `/setbio ТЕКСТ` to create or edit a description of up to **250 characters**, `/mybio` to view it, and `/setbio очистить` to remove it. Descriptions are stored separately for each group, trimmed, and HTML-escaped before display. Use `/rewards` (or write «награды») to see unlocked decorative rewards and the nearest next reward. Level rewards unlock at levels 2, 5, 10, 25, 50, 100, 250, and 500; activity rewards unlock at 10, 50, 100, 250, 500, and 1000 XP-eligible messages. Rewards are derived from saved XP/message counters, require no XP spending, and do not need a separate claim, so they remain consistent after restarts. Level-ups are announced in the group; every 100th level (100, 200, 300, and onward) receives a special milestone celebration, with custom messages for levels 100–1000 and generated milestone-specific wording for higher levels.
 
+## RP-действия и ключевые слова
+
+RP-действия создаются и редактируются через админ-панель. При создании используйте формат:
+
+`Название | ключ1, ключ2 | Ответ бота`
+
+У каждого действия должен быть собственный набор ключевых слов. Ключи нормализуются без учёта регистра и лишних пробелов; повтор одного ключа в рамках действия удаляется. Одно ключевое слово нельзя назначить другому действию в том же чате: бот покажет название действия, которое уже использует этот ключ, и не сохранит конфликтующее изменение. В разных чатах каталоги независимы. Срабатывание происходит только при точном совпадении обычного сообщения с ключевым словом, а не при упоминании ключа внутри длинной фразы.
+
 Duration formats: `30м`, `2ч`, `7д`.
 
 ## Automated checks
