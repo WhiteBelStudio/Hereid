@@ -455,8 +455,8 @@ def test_xp_rewards_unlock_from_level_and_activity_without_duplicates():
     unlocked_keys = {reward["key"] for reward in rewards["unlocked"]}
     assert "level_2" in unlocked_keys
     assert "messages_10" in unlocked_keys
-    assert rewards["next"] is not None
-    assert rewards["next"]["key"] in {"level_5", "messages_50"}
+    assert rewards["next_level"]["key"] == "level_5"
+    assert rewards["next_activity"]["key"] == "messages_50"
 
     new_rewards = main.newly_unlocked_xp_rewards(empty, beginner)
     assert {reward["key"] for reward in new_rewards} >= {"level_2", "messages_10"}
