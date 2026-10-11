@@ -12,7 +12,7 @@ Telegram group moderation bot with Russian commands, role-based administration, 
 ## Pterodactyl deployment
 
 1. Create a Python server using Python 3.12.
-2. Upload/clone the repository into the server's working directory. Ensure `main.py`, `profile.py`, `start.py`, and `requirements.txt` are in the same directory.
+2. Put only the small bootstrap file `start.py` in the server's working directory (or upload it once from this repository). Runtime files `main.py`, `profile.py`, and `requirements.txt` are downloaded from GitHub on every startup.
 3. Set the Pterodactyl Startup command to:
    ```bash
    python start.py
@@ -20,14 +20,16 @@ Telegram group moderation bot with Russian commands, role-based administration, 
 4. In Startup variables, set `BOT_TOKEN` to the real token from @BotFather. Never put the token into source code, logs, screenshots, or GitHub.
 5. Set `OWNER_TELEGRAM_ID` to the numeric Telegram ID of the person who owns the internal admin panel. Do not use a username here.
 6. Keep `DB_PATH=heradelegend.db` unless you have a specific persistent path. The database file and its directory must be writable and must survive container restarts.
-7. Optional settings:
+7. For a private repository, set `GITHUB_TOKEN` in Pterodactyl Startup variables to a fine-grained token with read-only **Contents** access for this repository. Never commit or share this token. For a public repository, the token can be omitted.
+8. Optional settings:
+   - `GITHUB_BRANCH=main` — branch to download from.
    - `LOG_LEVEL=INFO`
    - `TELEGRAM_REQUEST_TIMEOUT=60`
    - `TELEGRAM_PROXY=` — leave blank when direct outbound access works; otherwise use a reachable SOCKS5/HTTP proxy URL supported by aiogram/aiohttp-socks. Keep proxy credentials private.
-8. Start the server and inspect the console. A successful connection logs the bot username and ID. If startup reports a network error, verify outbound access and the proxy from the hosting provider; do not repeatedly rotate tokens for a network issue.
-9. Restart once and confirm the bot reconnects and existing settings/actions remain in the SQLite database. Back up the database before upgrades.
+9. Start the server and inspect the console. A successful connection logs the bot username and ID. If startup reports a network error, verify outbound access and the proxy from the hosting provider; do not repeatedly rotate tokens for a network issue.
+10. Restart once and confirm the bot reconnects and existing settings/actions remain in the SQLite database. Back up the database before upgrades.
 
-The startup script downloads `main.py` and `profile.py` directly from `https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main/` before launch, validates both files, then installs/checks requirements, validates `BOT_TOKEN`, prepares the database directory, and starts the bot. If GitHub is unavailable, it falls back to existing local copies when both files exist. It never changes `.env` or the SQLite database and does not print the bot token or proxy URL. Do not delete `heradelegend.db` to troubleshoot.
+The startup script downloads `requirements.txt`, `main.py`, and `profile.py` directly from `WhiteBelStudio/Hereid` on every start, validates the source (including Python syntax) before replacing runtime files, installs dependencies, validates `BOT_TOKEN`, prepares the database directory, and starts the bot. If GitHub download or validation fails, startup stops instead of silently running stale local source. The bootstrap `start.py`, Pterodactyl environment variables, and SQLite database are not overwritten by source updates. Do not delete `heradelegend.db` to troubleshoot.
 
 ## Telegram group setup
 
