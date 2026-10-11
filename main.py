@@ -429,6 +429,94 @@ def xp_leaderboard_text(chat_id: int, limit: int = 10) -> str:
 
 
 
+LEVEL_REWARDS = (
+    {"key": "level_2", "kind": "level", "threshold": 2, "icon": "🌱", "title": "Первый шаг", "description": "Достигнут 2-й уровень"},
+    {"key": "level_5", "kind": "level", "threshold": 5, "icon": "💬", "title": "Активный участник", "description": "Достигнут 5-й уровень"},
+    {"key": "level_10", "kind": "level", "threshold": 10, "icon": "⭐", "title": "Знакомое лицо", "description": "Достигнут 10-й уровень"},
+    {"key": "level_25", "kind": "level", "threshold": 25, "icon": "🤝", "title": "Опора сообщества", "description": "Достигнут 25-й уровень"},
+    {"key": "level_50", "kind": "level", "threshold": 50, "icon": "🏅", "title": "Ветеран чата", "description": "Достигнут 50-й уровень"},
+    {"key": "level_100", "kind": "level", "threshold": 100, "icon": "👑", "title": "Легенда", "description": "Достигнут 100-й уровень"},
+    {"key": "level_250", "kind": "level", "threshold": 250, "icon": "💎", "title": "Миф сообщества", "description": "Достигнут 250-й уровень"},
+    {"key": "level_500", "kind": "level", "threshold": 500, "icon": "🕊️", "title": "Живая легенда", "description": "Достигнут 500-й уровень"},
+)
+ACTIVITY_REWARDS = (
+    {"key": "messages_10", "kind": "messages", "threshold": 10, "icon": "✍️", "title": "Первый разговор", "description": "10 учтённых сообщений"},
+    {"key": "messages_50", "kind": "messages", "threshold": 50, "icon": "🗣️", "title": "Свой человек", "description": "50 учтённых сообщений"},
+    {"key": "messages_100", "kind": "messages", "threshold": 100, "icon": "🔥", "title": "На связи", "description": "100 учтённых сообщений"},
+    {"key": "messages_250", "kind": "messages", "threshold": 250, "icon": "⚡", "title": "Энергия чата", "description": "250 учтённых сообщений"},
+    {"key": "messages_500", "kind": "messages", "threshold": 500, "icon": "🏆", "title": "Голос сообщества", "description": "500 учтённых сообщений"},
+    {"key": "messages_1000", "kind": "messages", "threshold": 1000, "icon": "🌟", "title": "Летопись чата", "description": "1000 учтённых сообщений"},
+)
+
+
+def xp_reward_is_unlocked(reward: dict, profile: dict) -> bool:
+    """Rewards are derived from persisted level/activity counters, so they cannot be duplicated."""
+    if reward["kind"] == "level":
+        return xp_level(profile.get("xp", 0)) >= reward["threshold"]
+    return int(profile.get("eligible_messages", 0)) >= reward["threshold"]
+
+
+def get_xp_rewards(profile: dict) -> dict:
+    """Return all unlocked rewards and the nearest still-locked reward."""
+    catalog = sorted((*LEVEL_REWARDS, *ACTIVITY_REWARDS), key=lambda item: (
+        item["threshold"], 0 if item["kind"] == "level" else 1
+    ))
+    unlocked = [reward for reward in catalog if xp_reward_is_unlocked(reward, profile)]
+    locked = [reward for reward in catalog if not xp_reward_is_unlocked(reward, profile)]
+    return {"unlocked": unlocked, "next": locked[0] if locked else None, "total": len(catalog)}
+
+
+def newly_unlocked_xp_rewards(before_profile: dict, after_profile: dict) -> list:
+    """Identify only rewards crossed by this update, without a separate claim table."""
+    before = {
+        reward["key"] for reward in (*LEVEL_REWARDS, *ACTIVITY_REWARDS)
+        if xp_reward_is_unlocked(reward, before_profile)
+    }
+    return [
+        reward for reward in (*LEVEL_REWARDS, *ACTIVITY_REWARDS)
+        if reward["key"] not in before and xp_reward_is_unlocked(reward, after_profile)
+    ]
+
+
+def xp_rewards_text(profile: dict) -> str:
+    reward_state = get_xp_rewards(profile)
+    unlocked = reward_state["unlocked"]
+    lines = ["🎁 <b>ТВОИ НАГРАДЫ</b>", ""]
+    if unlocked:
+        lines.append(f"🏅 Открыто: <b>{len(unlocked)} из {reward_state['total']}</b>")
+        lines.extend(f"{reward['icon']} <b>{html.escape(reward['title'])}</b> — {html.escape(reward['description'])}"
+                     for reward in unlocked)
+    else:
+        lines.append("Пока наград нет — продолжай общаться и набирать опыт!")
+    next_reward = reward_state["next"]
+    if next_reward:
+        lines.extend([
+            "",
+            f"🔒 <b>Следующая награда: {next_reward['icon']} {html.escape(next_reward['title'])}</b>",
+            html.escape(next_reward["description"]),
+        ])
+        if next_reward["kind"] == "level":
+            current_level = xp_level(profile.get("xp", 0))
+            lines.append(f"Прогресс уровня: {current_level}/{next_reward['threshold']}")
+        else:
+            current_messages = int(profile.get("eligible_messages", 0))
+            lines.append(f"Прогресс активности: {current_messages}/{next_reward['threshold']} сообщений")
+    else:
+        lines.extend(["", "🌠 Ты открыл все награды из текущего списка!"])
+    lines.extend(["", "Награды декоративные и открываются автоматически; опыт не тратится."])
+    return "\n".join(lines)
+
+
+def xp_rewards_announcement(rewards: list) -> str | None:
+    if not rewards:
+        return None
+    lines = ["🎁 <b>НОВАЯ НАГРАДА!</b>"]
+    for reward in rewards:
+        lines.append(f"{reward['icon']} <b>{html.escape(reward['title'])}</b> — {html.escape(reward['description'])}")
+    lines.append("Открыть весь список: <code>/rewards</code>")
+    return "\n\n".join(lines)
+
+
 FLOOD_MESSAGES = defaultdict(deque)
 LINK_PATTERN = re.compile(r"(?:https?://|www\.|t\.me/|telegram\.me/)", re.IGNORECASE)
 
@@ -1123,7 +1211,7 @@ COMMANDS = (
     "<code>/xp</code>, <code>/level</code>, <code>/mylevel</code>, <code>/опыт</code>, <code>/уровень</code> — профиль опыта и уровень.\n"
     "<code>мой опыт</code>, <code>мой уровень</code>, <code>опыт</code>, <code>уровень</code> — открыть профиль без слеша.\n"
     "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code>, <code>/топопыта</code>, <code>/топуровней</code> — рейтинг участников.\n"
-    "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"
+    "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"\n    "<code>/rewards</code> — список наград за уровни и активность; награды открываются автоматически.\n"
     "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\n\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
@@ -1148,7 +1236,7 @@ CONTROL_COMMANDS = frozenset({
     "выговор", "выговоры", "снятьвыговор", "помощь", "команды", "команда",
     "help", "админ", "admin", "start",
     "xp", "level", "mylevel", "опыт", "уровень", "мой опыт", "мой уровень",
-    "topxp", "xptop", "toplevel", "топопыта", "топуровней", "топ опыта",
+    "topxp", "xptop", "toplevel", "топопыта", "топуровней", "rewards", "награды", "мои награды", "топ опыта",
     "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта",
 })
 
@@ -1162,8 +1250,8 @@ def is_control_message(text: str) -> bool:
     if normalized in {
         "что умеешь", "админ меню", "меню админа", "панель админа",
         "панель модератора", "снять варн", "снять пред", "снять предупреждение",
-        "снять выговор", "мой опыт", "мой уровень", "мой xp", "мой уровень опыта",
-        "топ опыта", "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта",
+        "снять выговор", "мой опыт", "мой уровень", "мой xp", "мой уровень опыта", "награды", "мои награды",
+        "топ опыта", "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта", "награды", "мои награды", "rewards", "награды", "мои награды",
     }:
         return True
     return any(term in normalized for term in ("жалоба", "апелляция", "поддержка", "помогите"))
@@ -1414,6 +1502,16 @@ async def xp_command(message: Message):
     )
 
 
+@dp.message(Command("rewards"))
+async def rewards_command(message: Message):
+    if not message.from_user:
+        return
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("🎁 Награды доступны в групповом чате.")
+        return
+    await message.answer(xp_rewards_text(get_xp_profile(message.chat.id, message.from_user.id)))
+
+
 @dp.message(Command(commands=["topxp", "xptop", "toplevel", "топопыта", "топуровней"]))
 async def top_xp_command(message: Message):
     if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
@@ -1489,6 +1587,11 @@ async def router(message: Message):
                 )
                 if announcement:
                     await message.answer(announcement)
+                reward_announcement = xp_rewards_announcement(
+                    newly_unlocked_xp_rewards(before_profile, after_profile)
+                )
+                if reward_announcement:
+                    await message.answer(reward_announcement)
         except sqlite3.Error as exc:
             log.warning("XP award failed in chat_id=%s user_id=%s (%s)",
                         message.chat.id, message.from_user.id, type(exc).__name__)
@@ -1856,6 +1959,11 @@ async def router(message: Message):
                 f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\n"
                 f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>"
             )
+    elif text in {"награды", "мои награды"}:
+        if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            await message.reply("🎁 Награды доступны в групповом чате.")
+        else:
+            await message.reply(xp_rewards_text(get_xp_profile(message.chat.id, message.from_user.id)))
     elif text in {"топ опыта", "топ уровней", "рейтинг опыта", "рейтинг уровней", "лидеры опыта"}:
         if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
             await message.reply("🏆 Рейтинг XP доступен в групповом чате.")
