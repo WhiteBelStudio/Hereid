@@ -91,6 +91,7 @@ def init_db():
           last_awarded_at REAL NOT NULL DEFAULT 0,
           display_name TEXT NOT NULL DEFAULT '',
           username TEXT NOT NULL DEFAULT '',
+          bio TEXT NOT NULL DEFAULT '' CHECK(length(bio) <= 250),
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           PRIMARY KEY(chat_id,user_id)
@@ -215,6 +216,11 @@ def init_db():
         if "details" not in action_columns:
             con.execute("ALTER TABLE actions ADD COLUMN details TEXT NOT NULL DEFAULT ''")
 
+        # Add the about-me field in place. Existing XP records are preserved.
+        xp_columns = {row[1] for row in con.execute("PRAGMA table_info(xp_profiles)").fetchall()}
+        if "bio" not in xp_columns:
+            con.execute("ALTER TABLE xp_profiles ADD COLUMN bio TEXT NOT NULL DEFAULT ''")
+
         # Versioned, idempotent schema tracking for future safe migrations.
         con.execute("""
             CREATE TABLE IF NOT EXISTS schema_migrations(
@@ -261,9 +267,14 @@ def init_db():
             (5, migration_time,
              "Add persistent chat-scoped XP profiles without deleting existing data"),
         )
+        con.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,description) VALUES(?,?,?)",
+            (6, migration_time,
+             "Add persistent chat-scoped about-me text to XP profiles without deleting existing data"),
+        )
         current_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-        if current_version < 5:
-            con.execute("PRAGMA user_version=5")
+        if current_version < 6:
+            con.execute("PRAGMA user_version=6")
         con.commit()
 
 
@@ -303,12 +314,46 @@ def award_message_xp(chat_id: int, user_id: int, display_name: str, username: st
 def get_xp_profile(chat_id: int, user_id: int):
     with db() as con:
         row = con.execute(
-            "SELECT xp,eligible_messages,display_name,username FROM xp_profiles WHERE chat_id=? AND user_id=?",
+            "SELECT xp,eligible_messages,display_name,username,bio FROM xp_profiles WHERE chat_id=? AND user_id=?",
             (chat_id, user_id),
         ).fetchone()
     return dict(row) if row else {
-        "xp": 0, "eligible_messages": 0, "display_name": "", "username": ""
+        "xp": 0, "eligible_messages": 0, "display_name": "", "username": "", "bio": ""
     }
+
+
+XP_BIO_MAX_LENGTH = 250
+
+
+def set_xp_bio(chat_id: int, user_id: int, bio: str, display_name: str = "", username: str = "") -> str:
+    """Persist a trimmed, chat-scoped about-me field; empty text clears it."""
+    normalized = bio.strip()
+    if len(normalized) > XP_BIO_MAX_LENGTH:
+        raise ValueError(f"О себе должно быть не длиннее {XP_BIO_MAX_LENGTH} символов.")
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db() as con:
+        con.execute(
+            """
+            INSERT INTO xp_profiles(
+                chat_id,user_id,xp,eligible_messages,last_awarded_at,
+                display_name,username,bio,created_at,updated_at
+            ) VALUES(?,?,0,0,0,?,?,?,?,?)
+            ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                bio=excluded.bio,
+                display_name=CASE WHEN excluded.display_name='' THEN xp_profiles.display_name
+                                  ELSE excluded.display_name END,
+                username=CASE WHEN excluded.username='' THEN xp_profiles.username
+                               ELSE excluded.username END,
+                updated_at=excluded.updated_at
+            """,
+            (chat_id,user_id,display_name[:128],username[:64],normalized,timestamp,timestamp),
+        )
+    return normalized
+
+
+def xp_bio_text(profile: dict) -> str:
+    bio = str(profile.get("bio", "") or "").strip()
+    return html.escape(bio) if bio else "Пока не заполнено."
 
 
 LEVEL_XP_BASE = 100
@@ -1224,6 +1269,8 @@ COMMANDS = (
     "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code>, <code>/топопыта</code>, <code>/топуровней</code> — рейтинг участников.\n"
     "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"
     "<code>/rewards</code> — список наград за уровни и активность; награды открываются автоматически.\n"
+    "<code>/setbio ТЕКСТ</code> — заполнить или изменить «О себе» (до 250 символов).\\n"
+    "<code>/setbio очистить</code> — удалить описание. <code>/mybio</code> — посмотреть его.\\n"
     "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\n\n"
     "Для модерации бот должен иметь необходимые права в группе."
 )
@@ -1509,8 +1556,62 @@ async def xp_command(message: Message):
         f"📈 Прогресс: <b>{progress['current_xp']}/{progress['needed_xp']} XP</b>\n"
         f"{progress_bar} <b>{progress['percent']}%</b>\n"
         f"🎯 До следующего уровня: <b>{progress['next_level_xp'] - profile['xp']} XP</b>\n"
-        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\n\n"
+        f"💬 Учтённых сообщений: <b>{profile['eligible_messages']}</b>\n"
+        f"📝 О себе: {xp_bio_text(profile)}\n\n"
         "Пиши по делу и участвуй в жизни чата — опыт начисляется постепенно."
+    )
+
+
+@dp.message(Command("setbio"))
+async def set_bio_command(message: Message):
+    if not message.from_user:
+        return
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("📝 «О себе» настраивается в групповом чате, где включён бот.")
+        return
+    _, _, raw_bio = (message.text or "").partition(" ")
+    bio = raw_bio.strip()
+    if not bio:
+        await message.answer(
+            f"📝 Напиши описание после команды. Максимум — {XP_BIO_MAX_LENGTH} символов.\\n"
+            "Пример: <code>/setbio Люблю игры и общение</code>\\n"
+            "Чтобы удалить описание: <code>/setbio очистить</code>"
+        )
+        return
+    if bio.casefold() in {"очистить", "удалить", "clear"}:
+        set_xp_bio(
+            message.chat.id, message.from_user.id, "",
+            message.from_user.full_name or "Участник", message.from_user.username or "",
+        )
+        await message.answer("✅ Описание «О себе» удалено.")
+        return
+    if len(bio) > XP_BIO_MAX_LENGTH:
+        await message.answer(f"⚠️ Описание слишком длинное. Максимум — {XP_BIO_MAX_LENGTH} символов; сейчас — {len(bio)}.")
+        return
+    set_xp_bio(
+        message.chat.id, message.from_user.id, bio,
+        message.from_user.full_name or "Участник", message.from_user.username or "",
+    )
+    await message.answer(
+        "✅ <b>Описание сохранено!</b>\\n"
+        f"📝 {html.escape(bio)}\\n\\n"
+        "Посмотреть описание: <code>/mybio</code>. Изменить его можно командой <code>/setbio ТЕКСТ</code>."
+    )
+
+
+@dp.message(Command("mybio"))
+async def my_bio_command(message: Message):
+    if not message.from_user:
+        return
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("📝 «О себе» доступно в групповом чате, где включён бот.")
+        return
+    profile = get_xp_profile(message.chat.id, message.from_user.id)
+    display_name = html.escape(message.from_user.full_name or "Участник")
+    await message.answer(
+        f"📝 <b>О СЕБЕ — {display_name}</b>\\n\\n"
+        f"{xp_bio_text(profile)}\\n\\n"
+        "Изменить: <code>/setbio ТЕКСТ</code> · Удалить: <code>/setbio очистить</code>"
     )
 
 
