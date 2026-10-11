@@ -13,36 +13,52 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     os.chdir(root)
 
-    # Keep the deployed bot code aligned with the repository without touching
-    # .env or the SQLite database. If GitHub is temporarily unavailable, use
-    # the already-installed local main.py and report a non-secret warning.
+    # Download the application entry module and profile module directly from GitHub.
+    # Stage and validate both files before replacing either, so a partial download cannot
+    # leave a mixed version. Never touch .env or the SQLite database.
     auto_update = os.getenv("AUTO_UPDATE_MAIN", "1").strip().lower() not in {"0", "false", "no"}
-    main_file = root / "main.py"
+    app_files = {
+        "main.py": b"async def main",
+        "profile.py": b"def format_participant_profile",
+    }
     if auto_update:
-        source_url = "https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main/main.py"
+        staged: dict[str, Path] = {}
         try:
-            request = urllib.request.Request(
-                source_url,
-                headers={"User-Agent": "heradeLegend-Pterodactyl-Updater"},
-            )
-            with urllib.request.urlopen(request, timeout=12) as response:
-                latest_code = response.read()
-            if not latest_code or b"async def main" not in latest_code:
-                raise ValueError("downloaded main.py failed basic validation")
-            temporary_file = root / "main.py.update"
-            temporary_file.write_bytes(latest_code)
-            temporary_file.replace(main_file)
-            print("[startup] Updated main.py from the configured GitHub repository.")
+            for filename, required_marker in app_files.items():
+                source_url = f"https://raw.githubusercontent.com/WhiteBelStudio/Hereid/main/{filename}"
+                request = urllib.request.Request(
+                    source_url,
+                    headers={"User-Agent": "heradeLegend-Pterodactyl-Updater"},
+                )
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    downloaded = response.read()
+                if not downloaded or required_marker not in downloaded:
+                    raise ValueError(f"downloaded {filename} failed basic validation")
+                temporary_file = root / f".{filename}.download"
+                temporary_file.write_bytes(downloaded)
+                staged[filename] = temporary_file
+
+            # All required files downloaded and validated: replace the local versions.
+            for filename, temporary_file in staged.items():
+                temporary_file.replace(root / filename)
+            print("[startup] Updated main.py and profile.py directly from GitHub.")
         except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
-            if not main_file.is_file():
+            for temporary_file in staged.values():
+                try:
+                    temporary_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            missing = [filename for filename in app_files if not (root / filename).is_file()]
+            if missing:
                 print(
-                    f"FATAL: could not download main.py and no local copy exists ({type(exc).__name__}).",
+                    f"FATAL: GitHub update failed ({type(exc).__name__}) and required local "
+                    f"file(s) are missing: {', '.join(missing)}.",
                     file=sys.stderr,
                 )
                 return 2
             print(
-                f"[startup] WARNING: could not update main.py ({type(exc).__name__}); "
-                "using the existing local copy.",
+                f"[startup] WARNING: GitHub update failed ({type(exc).__name__}); "
+                "using the existing local application files.",
                 file=sys.stderr,
             )
 
