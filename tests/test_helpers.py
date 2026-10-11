@@ -381,12 +381,21 @@ def test_xp_schema_migration_is_idempotent_and_preserves_existing_records(tmp_pa
         migration = con.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version=5"
         ).fetchone()[0]
+        bio_migration = con.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=6"
+        ).fetchone()[0]
         version = con.execute("PRAGMA user_version").fetchone()[0]
+        bio = con.execute(
+            "SELECT bio FROM xp_profiles WHERE chat_id=? AND user_id=?",
+            (-100123, 456),
+        ).fetchone()["bio"]
 
     assert row["xp"] == 5
     assert row["eligible_messages"] == 1
     assert migration == 1
-    assert version >= 5
+    assert bio_migration == 1
+    assert bio == ""
+    assert version >= 6
 
 
 def test_xp_leaderboard_has_clean_unframed_layout(tmp_path, monkeypatch):
@@ -526,3 +535,75 @@ def test_xp_reward_catalog_boundaries_and_completion():
     assert completed["next_level"] is None
     assert completed["next_activity"] is None
 
+
+
+def test_xp_bio_is_persistent_chat_scoped_trimmed_and_clearable(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xp_bio.sqlite3"))
+    main.init_db()
+
+    saved = main.set_xp_bio(-100123, 456, "  Люблю игры и общение  ", "Alice", "alice")
+    assert saved == "Люблю игры и общение"
+    profile = main.get_xp_profile(-100123, 456)
+    assert profile["bio"] == "Люблю игры и общение"
+    assert profile["display_name"] == "Alice"
+
+    # Descriptions are isolated by group and are HTML-escaped for Telegram HTML mode.
+    assert main.get_xp_profile(-100999, 456)["bio"] == ""
+    main.set_xp_bio(-100123, 789, "<b>Не мой профиль</b>")
+    assert main.xp_bio_text(main.get_xp_profile(-100123, 789)) == "&lt;b&gt;Не мой профиль&lt;/b&gt;"
+    assert main.xp_bio_text({"bio": ""}) == "Пока не заполнено."
+
+    # Editing and clearing never reset the user's XP or activity counters.
+    main.award_message_xp(-100123, 456, "Alice", "alice")
+    xp_before = main.get_xp_profile(-100123, 456)["xp"]
+    main.set_xp_bio(-100123, 456, "Обновлённое описание")
+    assert main.get_xp_profile(-100123, 456)["xp"] == xp_before
+    main.set_xp_bio(-100123, 456, "")
+    assert main.get_xp_profile(-100123, 456)["bio"] == ""
+    assert main.get_xp_profile(-100123, 456)["xp"] == xp_before
+
+
+def test_xp_bio_enforces_character_limit():
+    try:
+        main.set_xp_bio(-100123, 456, "x" * (main.XP_BIO_MAX_LENGTH + 1))
+    except ValueError as exc:
+        assert "250" in str(exc)
+    else:
+        raise AssertionError("Overlong about-me text must be rejected")
+
+
+def test_legacy_xp_profile_migration_adds_bio_without_losing_records(tmp_path, monkeypatch):
+    import sqlite3
+
+    database = tmp_path / "legacy_xp.sqlite3"
+    monkeypatch.setattr(main, "DB_PATH", str(database))
+    with sqlite3.connect(database) as con:
+        con.execute("""
+            CREATE TABLE xp_profiles(
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                xp INTEGER NOT NULL DEFAULT 0,
+                eligible_messages INTEGER NOT NULL DEFAULT 0,
+                last_awarded_at REAL NOT NULL DEFAULT 0,
+                display_name TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(chat_id,user_id)
+            )
+        """)
+        con.execute(
+            "INSERT INTO xp_profiles(chat_id,user_id,xp,eligible_messages,last_awarded_at,display_name,username,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (-100123, 456, 175, 35, 1800000000.0, "Existing User", "existing", "2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"),
+        )
+        con.commit()
+
+    main.init_db()
+    profile = main.get_xp_profile(-100123, 456)
+    assert profile["xp"] == 175
+    assert profile["eligible_messages"] == 35
+    assert profile["display_name"] == "Existing User"
+    assert profile["bio"] == ""
+    with main.db() as con:
+        assert con.execute("PRAGMA user_version").fetchone()[0] >= 6
+        assert con.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=6").fetchone()[0] == 1
