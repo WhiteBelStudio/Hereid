@@ -607,3 +607,50 @@ def test_legacy_xp_profile_migration_adds_bio_without_losing_records(tmp_path, m
     with main.db() as con:
         assert con.execute("PRAGMA user_version").fetchone()[0] >= 6
         assert con.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=6").fetchone()[0] == 1
+
+
+def test_rp_action_keywords_are_unique_per_chat_and_normalized(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "rp_keywords.sqlite3"))
+    main.init_db()
+    assert main.normalize_rp_keywords(" ОБНЯТЬ, обнять ,   ДАЙ   ПЯТЬ ") == [
+        "обнять", "дай пять",
+    ]
+
+    with main.db() as con:
+        first = con.execute(
+            "INSERT INTO rp_actions(chat_id,name,keywords,response,created_by,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (-100123, "Обнять", "обнять, обнимашки", "Ответ 1", 1, "2026-10-11"),
+        ).lastrowid
+        con.execute(
+            "INSERT INTO rp_actions(chat_id,name,keywords,response,created_by,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (-100123, "Дать пять", "дай пять, пять", "Ответ 2", 1, "2026-10-11"),
+        )
+
+        conflicts = main.find_rp_keyword_conflicts(
+            con, -100123, ["ОБНИМАШКИ", "дай пять"]
+        )
+        assert conflicts == {
+            "обнимашки": "Обнять",
+            "дай пять": "Дать пять",
+        }
+
+        # Editing an action may keep its own keywords; only other actions conflict.
+        assert main.find_rp_keyword_conflicts(
+            con, -100123, ["обнять", "обнимашки"], exclude_action_id=first
+        ) == {}
+
+        # Keyword ownership is isolated by chat.
+        assert main.find_rp_keyword_conflicts(
+            con, -100999, ["обнять"]
+        ) == {}
+
+
+def test_rp_action_keywords_reject_empty_and_overlong_values():
+    import pytest
+
+    with pytest.raises(ValueError):
+        main.normalize_rp_keywords(" , , ")
+    with pytest.raises(ValueError, match="60"):
+        main.normalize_rp_keywords("x" * 61)
