@@ -457,13 +457,21 @@ def xp_reward_is_unlocked(reward: dict, profile: dict) -> bool:
 
 
 def get_xp_rewards(profile: dict) -> dict:
-    """Return all unlocked rewards and the nearest still-locked reward."""
-    catalog = sorted((*LEVEL_REWARDS, *ACTIVITY_REWARDS), key=lambda item: (
-        item["threshold"], 0 if item["kind"] == "level" else 1
-    ))
+    """Return unlocked rewards and the next target in each independent category."""
+    catalog = (*LEVEL_REWARDS, *ACTIVITY_REWARDS)
     unlocked = [reward for reward in catalog if xp_reward_is_unlocked(reward, profile)]
-    locked = [reward for reward in catalog if not xp_reward_is_unlocked(reward, profile)]
-    return {"unlocked": unlocked, "next": locked[0] if locked else None, "total": len(catalog)}
+    locked_levels = [
+        reward for reward in LEVEL_REWARDS if not xp_reward_is_unlocked(reward, profile)
+    ]
+    locked_activity = [
+        reward for reward in ACTIVITY_REWARDS if not xp_reward_is_unlocked(reward, profile)
+    ]
+    return {
+        "unlocked": unlocked,
+        "next_level": locked_levels[0] if locked_levels else None,
+        "next_activity": locked_activity[0] if locked_activity else None,
+        "total": len(catalog),
+    }
 
 
 def newly_unlocked_xp_rewards(before_profile: dict, after_profile: dict) -> list:
@@ -488,19 +496,22 @@ def xp_rewards_text(profile: dict) -> str:
                      for reward in unlocked)
     else:
         lines.append("Пока наград нет — продолжай общаться и набирать опыт!")
-    next_reward = reward_state["next"]
-    if next_reward:
-        lines.extend([
-            "",
-            f"🔒 <b>Следующая награда: {next_reward['icon']} {html.escape(next_reward['title'])}</b>",
-            html.escape(next_reward["description"]),
-        ])
-        if next_reward["kind"] == "level":
+    next_level = reward_state["next_level"]
+    next_activity = reward_state["next_activity"]
+    if next_level or next_activity:
+        lines.append("")
+        if next_level:
             current_level = xp_level(profile.get("xp", 0))
-            lines.append(f"Прогресс уровня: {current_level}/{next_reward['threshold']}")
-        else:
+            lines.extend([
+                f"🔒 <b>Следующая награда за уровень: {next_level['icon']} {html.escape(next_level['title'])}</b>",
+                f"Уровень: {current_level}/{next_level['threshold']}",
+            ])
+        if next_activity:
             current_messages = int(profile.get("eligible_messages", 0))
-            lines.append(f"Прогресс активности: {current_messages}/{next_reward['threshold']} сообщений")
+            lines.extend([
+                f"🔒 <b>Следующая награда за активность: {next_activity['icon']} {html.escape(next_activity['title'])}</b>",
+                f"Сообщения: {current_messages}/{next_activity['threshold']}",
+            ])
     else:
         lines.extend(["", "🌠 Ты открыл все награды из текущего списка!"])
     lines.extend(["", "Награды декоративные и открываются автоматически; опыт не тратится."])
