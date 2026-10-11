@@ -2558,7 +2558,7 @@ async def callbacks(callback: CallbackQuery):
             "Отправьте одной строкой в формате:\n"
             "<code>Название | ключ1, ключ2 | Ответ бота</code>\n\n"
             "Пример: <code>Приветствие | привет, здарова | *кивает и приветствует*</code>\n"
-            "Ключевые слова должны быть короткими фразами. Отмена: «отмена».",
+            "Ключевые слова должны быть короткими фразами и не повторяться у других действий в этом чате. Отмена: «отмена».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="rp:cancel")],
                 [InlineKeyboardButton(text="⬅️ В каталог", callback_data="panel:rp")],
