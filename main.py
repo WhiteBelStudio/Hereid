@@ -1302,6 +1302,7 @@ COMMANDS = (
     "Поддерживаемые сроки: 30м — минуты, 2ч — часы, 7д — дни.\n"
     "⭐ <b>Опыт и уровни</b>\n"
     "<code>/xp</code>, <code>/level</code>, <code>/mylevel</code>, <code>/опыт</code>, <code>/уровень</code> — профиль опыта и уровень.\n"
+    "<code>/profile</code>, <code>/myprofile</code>, <code>/профиль</code> — полный профиль; ответьте на сообщение участника, чтобы открыть его карточку.\n"
     "<code>мой опыт</code>, <code>мой уровень</code>, <code>опыт</code>, <code>уровень</code> — открыть профиль без слеша.\n"
     "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code>, <code>/топопыта</code>, <code>/топуровней</code> — рейтинг участников.\n"
     "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"
