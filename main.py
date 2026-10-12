@@ -58,6 +58,12 @@ logging.basicConfig(
 log = logging.getLogger("heradeLegend")
 
 
+# Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
+session = AiohttpSession(proxy=PROXY_URL, timeout=None)
+bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+dp.include_router(start_router)
+
 @dp.message(CommandStart())
 async def fallback_start_command(message: Message) -> None:
     """Fallback /start response if the welcome router is unavailable or outdated."""
@@ -72,12 +78,6 @@ async def fallback_start_command(message: Message) -> None:
         reply_markup=main_menu_keyboard(False),
     )
 
-
-# Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
-session = AiohttpSession(proxy=PROXY_URL, timeout=None)
-bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-dp.include_router(start_router)
 
 
 @contextmanager
