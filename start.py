@@ -106,14 +106,14 @@ async def _is_staff(chat_id: int, user_id: int, is_private: bool) -> bool:
             return True
 
         if not is_private:
-            return await has_permission(chat_id, user_id, "panel")
+            return await has_permission(chat_id, user_id, "moderate")
 
-        # In a private chat Telegram cannot tell us which group's admin role to use.
-        # Show the staff section only if the user has a configured role in at least one chat.
+        # In private chat, use configured moderation roles or the configured owner ID.
+        # Telegram group-admin status is only verifiable in the specific group.
         with db() as con:
             row = con.execute(
                 "SELECT 1 FROM role_assignments WHERE user_id=? "
-                "AND role IN ('admin','moderator','helper') LIMIT 1",
+                "AND role IN ('admin','moderator') LIMIT 1",
                 (user_id,),
             ).fetchone()
         return row is not None
