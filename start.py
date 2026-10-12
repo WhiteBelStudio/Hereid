@@ -118,7 +118,7 @@ async def _is_staff(chat_id: int, user_id: int, is_private: bool) -> bool:
 
 async def _rules_parts(chat_id: int, is_private: bool) -> list[str]:
     try:
-        from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT
+        from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT, PREVIOUS_DEFAULT_RULES
 
         if is_private:
             rules = DEFAULT_RULES
@@ -134,7 +134,7 @@ async def _rules_parts(chat_id: int, is_private: bool) -> list[str]:
             # For untouched legacy defaults, use the dedicated rules.py module.
             rules = (
                 configured_rules
-                if configured_rules and configured_rules != LEGACY_DATABASE_DEFAULT
+                if configured_rules and configured_rules not in (LEGACY_DATABASE_DEFAULT, PREVIOUS_DEFAULT_RULES)
                 else DEFAULT_RULES
             )
             footer = ""
