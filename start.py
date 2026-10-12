@@ -116,7 +116,7 @@ async def _is_staff(chat_id: int, user_id: int, is_private: bool) -> bool:
         return False
 
 
-async def _rules_text(chat_id: int, is_private: bool) -> str:
+async def _rules_parts(chat_id: int, is_private: bool) -> list[str]:
     try:
         from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT
 
@@ -140,25 +140,44 @@ async def _rules_text(chat_id: int, is_private: bool) -> str:
             footer = ""
 
         if not rules:
-            return (
+            return [
                 "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
                 "Правила пока не настроены. Обратись к администрации группы."
-            )
+            ]
 
-        # Telegram HTML blockquote displays the full rules as one quoted block.
-        result = (
-            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
-            "<blockquote>" + html.escape(rules) + "</blockquote>" + footer
-        )
-        if len(result) > 3900:
-            return (
-                "⚠️ Правила этой группы слишком длинные для одного сообщения Telegram. "
-                "Попроси администрацию сократить их до 3900 символов."
+        # Telegram limits a message to 4096 characters. Keep every rule intact,
+        # formatting each chunk as a quote rather than silently dropping text.
+        chunks: list[str] = []
+        current = ""
+        for line in rules.splitlines(keepends=True):
+            if len(line) > 3200:
+                if current:
+                    chunks.append(current.rstrip("\n"))
+                    current = ""
+                for offset in range(0, len(line), 3200):
+                    chunks.append(line[offset:offset + 3200].rstrip("\n"))
+                continue
+            if len(current) + len(line) > 3200:
+                chunks.append(current.rstrip("\n"))
+                current = line
+            else:
+                current += line
+        if current:
+            chunks.append(current.rstrip("\n"))
+        if not chunks:
+            chunks = [rules]
+
+        messages = []
+        for index, chunk in enumerate(chunks):
+            heading = "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n" if index == 0 else (
+                f"📜 <b>ПРАВИЛА СООБЩЕСТВА — продолжение ({index + 1}/{len(chunks)})</b>\n\n"
             )
-        return result
+            ending = footer if index == len(chunks) - 1 else ""
+            messages.append(heading + "<blockquote>" + html.escape(chunk) + "</blockquote>" + ending)
+        return messages
     except Exception as exc:
         log.warning("Could not load rules for chat_id=%s (%s).", chat_id, type(exc).__name__)
-        return "⚠️ Не удалось загрузить правила. Попробуй позже или обратись к администрации."
+        return ["⚠️ Не удалось загрузить правила. Попробуй позже или обратись к администрации."]
 
 async def _rp_keywords_text(chat_id: int, is_private: bool) -> str:
     if is_private:
@@ -276,10 +295,16 @@ async def callback_rules(callback: CallbackQuery) -> None:
     chat_id, is_private = _callback_chat(callback)
     if callback.message is not None and chat_id is not None:
         staff = await _is_staff(chat_id, callback.from_user.id, is_private)
+        parts = await _rules_parts(chat_id, is_private)
         await callback.message.edit_text(
-            await _rules_text(chat_id, is_private),
-            reply_markup=back_keyboard(staff),
+            parts[0],
+            reply_markup=back_keyboard(staff) if len(parts) == 1 else None,
         )
+        for index, part in enumerate(parts[1:], start=1):
+            await callback.message.answer(
+                part,
+                reply_markup=back_keyboard(staff) if index == len(parts) - 1 else None,
+            )
     await callback.answer()
 
 
