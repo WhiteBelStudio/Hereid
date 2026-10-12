@@ -12,7 +12,7 @@ from pathlib import Path
 
 OWNER = "WhiteBelStudio"
 REPO = "Hereid"
-BRANCH = os.getenv("GITHUB_BRANCH", "main").strip() or "main"
+BRANCH = "main"  # Always deploy the verified production branch.
 GITHUB_RAW = f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{BRANCH}"
 GITHUB_API = f"https://api.github.com/repos/{OWNER}/{REPO}/contents"
 
@@ -79,7 +79,7 @@ def main() -> int:
     # downloading the current source fails.
     files = {
         "requirements.txt": b"aiogram",
-        "main.py": b"async def main",
+        "main.py": b"timeout=disabled",
         "profile.py": b"def format_participant_profile",
     }
     staged_data: dict[str, bytes] = {}
@@ -102,7 +102,7 @@ def main() -> int:
 
         print(
             f"[startup] Downloaded and validated source from "
-            f"{OWNER}/{REPO}@{BRANCH}."
+            f"{OWNER}/{REPO}@{BRANCH}; HTTP timeout disabled."
         )
     except Exception as exc:
         for filename in files:
