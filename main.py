@@ -1098,6 +1098,59 @@ def home_keyboard(is_admin=False):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def send_help(message: Message):
+    """Send the public command reference and the RP triggers enabled in this group."""
+    is_admin = bool(
+        message.from_user
+        and message.chat.type != ChatType.PRIVATE
+        and await has_permission(message.chat.id, message.from_user.id, "panel")
+    )
+    await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(is_admin))
+
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer(
+            "🎭 Список RP-ключевых слов зависит от группы. Отправьте /help в нужной группе, "
+            "чтобы увидеть её включённые действия."
+        )
+        return
+
+    with db() as con:
+        rows = con.execute(
+            "SELECT name, keywords FROM rp_actions "
+            "WHERE chat_id=? AND is_enabled=1 ORDER BY name COLLATE NOCASE, id",
+            (message.chat.id,),
+        ).fetchall()
+
+    header = "🎭 <b>Ключевые слова RP-действий в этой группе</b>\n"
+    if not rows:
+        await message.answer(
+            header + "\nПока нет включённых RP-действий. Администратор может добавить их через панель → «RP-действия»."
+        )
+        return
+
+    chunks = []
+    current = header
+    for row in rows:
+        keywords = ", ".join(
+            part.strip() for part in str(row["keywords"] or "").split(",") if part.strip()
+        )
+        if not keywords:
+            continue
+        line = f"\n• <b>{html.escape(str(row['name']))}</b>: <code>{html.escape(keywords)}</code>"
+        if len(current) + len(line) > 3400:
+            chunks.append(current)
+            current = header + "\n(продолжение)\n"
+        current += line
+    if current != header:
+        chunks.append(current)
+
+    if not chunks:
+        await message.answer(header + "\nУ включённых действий пока не заданы ключевые слова.")
+        return
+    for chunk in chunks:
+        await message.answer(chunk)
+
+
 def role_overview(chat_id: int, viewer_id: int):
     """Show role management controls and the viewer's current effective role."""
     viewer_role = "owner" if OWNER_TELEGRAM_ID.isdigit() and viewer_id == int(OWNER_TELEGRAM_ID) else None
@@ -1430,35 +1483,31 @@ HELP = (
     "• Никому не сообщайте пароли и коды подтверждения."
 )
 COMMANDS = (
-    "🛡️ <b>Команды модерации</b>\n\n"
-    "Для команд с участником ответьте на его сообщение. Причину указывайте после команды.\n\n"
-    "<code>бан 7д спам</code> — заблокировать участника на 7 дней.\n"
-    "<code>бан спам</code> — заблокировать без указания срока.\n"
-    "<code>разбан TELEGRAM_ID</code> — снять блокировку по Telegram ID.\n"
-    "<code>мут 30м флуд</code> — запретить отправку сообщений на 30 минут.\n"
-    "<code>размут</code> — снять ограничение на отправку сообщений.\n"
-    "<code>варн флуд</code> — выдать предупреждение.\n"
-    "<code>варны</code> — показать активные предупреждения участника.\n"
-    "<code>снять варн</code> — снять последнее активное предупреждение.\n"
-    "<code>выговор неактив</code> — записать выговор участнику.\n"
-    "<code>выговоры</code> — показать активные выговоры.\n"
-    "<code>снять выговор</code> — снять последний активный выговор.\n"
-    "<code>админ меню</code> — открыть меню администратора.\n"
-    "<code>помощь</code> — открыть эту справку.\n\n"
-    "Поддерживаемые сроки: 30м — минуты, 2ч — часы, 7д — дни.\n"
-    "⭐ <b>Опыт и уровни</b>\n"
-    "<code>/xp</code>, <code>/level</code>, <code>/mylevel</code>, <code>/опыт</code>, <code>/уровень</code> — профиль опыта и уровень.\n"
-    "<code>/profile</code>, <code>/myprofile</code>, <code>/профиль</code> — полный профиль; ответьте на сообщение участника, чтобы открыть его карточку.\n"
-    "<code>мой опыт</code>, <code>мой уровень</code>, <code>опыт</code>, <code>уровень</code> — открыть профиль без слеша.\n"
-    "<code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code>, <code>/топопыта</code>, <code>/топуровней</code> — рейтинг участников.\n"
-    "<code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>лидеры опыта</code> — открыть рейтинг.\n"
-    "<code>/rewards</code> — список наград за уровни и активность; награды открываются автоматически.\n"
-    "<code>/setbio ТЕКСТ</code> — заполнить или изменить «О себе» (до 250 символов).\n"
-    "<code>/setbio очистить</code> — удалить описание. <code>/mybio</code> — посмотреть его.\n"
-    "<code>/rep +</code> или <code>/rep -</code> в ответ на сообщение — оценить репутацию участника.\n"
-    "<code>/rep</code> в ответ на сообщение — посмотреть репутацию участника.\n"
-    "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд. Требования к уровням растут с каждым уровнем.\n\n"
-    "Для модерации бот должен иметь необходимые права в группе."
+    "🧭 <b>Как пользоваться ботом</b>\n\n"
+    "<code>/help</code> — эта справка. Также работают: <code>помощь</code>, <code>команды</code>, <code>команда</code>, <code>help</code>, <code>что умеешь</code>.\n"
+    "<code>/start</code> — открыть главное меню.\n\n"
+    "🛡️ <b>Модерация — только для сотрудников с нужными правами</b>\n"
+    "Для действия над участником удобнее ответить на его сообщение. Также можно указать Telegram ID или @username, если команда это поддерживает.\n"
+    "• Бан: <code>бан 7д спам</code> / <code>ban 7д спам</code> — бан на срок; <code>бан спам</code> — без срока.\n"
+    "• Разбан: <code>разбан TELEGRAM_ID</code> / <code>unban TELEGRAM_ID</code>.\n"
+    "• Мут: <code>мут 30м флуд</code> / <code>mute 30м флуд</code>; размут: <code>размут</code> / <code>unmute</code>.\n"
+    "• Предупреждение: <code>варн причина</code>, <code>пред причина</code>, <code>предупреждение причина</code>.\n"
+    "• Список предупреждений: <code>варны</code> / <code>преды</code>. Снять последнее: <code>снять варн</code>, <code>снять пред</code>, <code>снять предупреждение</code>.\n"
+    "• Выговор: <code>выговор причина</code>; список: <code>выговоры</code>; снять последний: <code>снять выговор</code> / <code>снятьвыговор</code>.\n"
+    "• Панель: <code>админ меню</code>, <code>меню админа</code>, <code>панель админа</code>, <code>панель модератора</code> или <code>/admin</code>.\n"
+    "• Сроки: <code>30м</code> — минуты, <code>2ч</code> — часы, <code>7д</code> — дни. Причину пишите после срока.\n\n"
+    "⭐ <b>Профиль, опыт и награды</b>\n"
+    "• Опыт и уровень: <code>/xp</code>, <code>/level</code>, <code>/mylevel</code>, <code>/опыт</code>, <code>/уровень</code>; без слеша: <code>опыт</code>, <code>мой опыт</code>, <code>уровень</code>, <code>мой уровень</code>, <code>мой xp</code>, <code>мой уровень опыта</code>.\n"
+    "• Профиль: <code>/profile</code>, <code>/myprofile</code>, <code>/профиль</code>. Ответьте командой на сообщение участника, чтобы посмотреть его профиль.\n"
+    "• «О себе»: <code>/setbio ТЕКСТ</code> — задать описание до 250 символов; <code>/setbio очистить</code> — удалить; <code>/mybio</code> — посмотреть.\n"
+    "• Награды: <code>/rewards</code>, <code>награды</code>, <code>мои награды</code>. Они открываются автоматически.\n"
+    "• Рейтинг: <code>/topxp</code>, <code>/xptop</code>, <code>/toplevel</code>, <code>/топопыта</code>, <code>/топуровней</code>; без слеша: <code>топ опыта</code>, <code>топ уровней</code>, <code>рейтинг опыта</code>, <code>рейтинг уровней</code>, <code>лидеры опыта</code>.\n"
+    "• Репутация: <code>/rep</code> или <code>/репутация</code>. Ответьте на сообщение участника; <code>+</code> / <code>плюс</code> / <code>положительно</code> / <code>1</code> — повысить, <code>-</code> / <code>минус</code> / <code>отрицательно</code> / <code>-1</code> — понизить. Без аргумента — посмотреть репутацию.\n"
+    "За подходящее сообщение начисляется +5 XP не чаще раза в 60 секунд.\n\n"
+    "📨 <b>Обращения</b>\n"
+    "Чтобы обратиться к администрации, напишите сообщение со словом <code>жалоба</code>, <code>апелляция</code>, <code>поддержка</code> или <code>помогите</code>. Приём обращений может быть отключён настройками группы.\n\n"
+    "🎭 <b>RP-действия</b>\n"
+    "В каждой группе свой список ключевых слов. После этой справки бот покажет включённые в текущем чате RP-действия и их триггеры. Используйте точное ключевое слово отдельным сообщением."
 )
 
 
@@ -1712,7 +1761,7 @@ async def start(message: Message):
 
 @dp.message(Command("help"))
 async def help_command(message: Message):
-    await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))))
+    await send_help(message)
 
 
 @dp.message(Command("admin"))
@@ -2357,7 +2406,7 @@ async def router(message: Message):
         return
     text = message.text.lower().strip(" !?.")
     if text in {"помощь", "команды", "команда", "help", "что умеешь"}:
-        await message.answer(HELP + "\n\n" + COMMANDS, reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))))
+        await send_help(message)
     elif text in {"опыт", "мой опыт", "уровень", "мой уровень", "мой xp", "мой уровень опыта"}:
         if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
             await message.reply("⭐ XP работает внутри группового чата. Откройте профиль в группе, где включён бот.")
