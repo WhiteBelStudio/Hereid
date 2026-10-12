@@ -116,59 +116,46 @@ async def _is_staff(chat_id: int, user_id: int, is_private: bool) -> bool:
         return False
 
 
-def _split_message_text(text: str, limit: int = 3500) -> list[str]:
-    """Split plain/escaped Telegram HTML text without dropping any content."""
-    chunks: list[str] = []
-    current = ""
-
-    for line in text.splitlines(keepends=True):
-        # A single unusually long line must also be split to stay under Telegram's limit.
-        while len(line) > limit:
-            if current:
-                chunks.append(current.rstrip("\n"))
-                current = ""
-            chunks.append(line[:limit].rstrip("\n"))
-            line = line[limit:]
-
-        if len(current) + len(line) > limit:
-            if current:
-                chunks.append(current.rstrip("\n"))
-            current = line
-        else:
-            current += line
-
-    if current:
-        chunks.append(current.rstrip("\n"))
-    return chunks or [text[:limit]]
-
 async def _rules_text(chat_id: int, is_private: bool) -> str:
     try:
         from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT
 
         if is_private:
+            rules = DEFAULT_RULES
+            footer = (
+                "\\n\\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
+            )
+        else:
+            from main import get_chat_settings
+
+            settings = get_chat_settings(chat_id)
+            configured_rules = str(settings.get("rules_text") or "").strip()
+            # Keep group-specific rules when an administrator has customized them.
+            # For untouched legacy defaults, use the dedicated rules.py module.
+            rules = (
+                configured_rules
+                if configured_rules and configured_rules != LEGACY_DATABASE_DEFAULT
+                else DEFAULT_RULES
+            )
+            footer = ""
+
+        if not rules:
             return (
-                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
-                + html.escape(DEFAULT_RULES)
-                + "\n\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
+                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+                "Правила пока не настроены. Обратись к администрации группы."
             )
 
-        from main import get_chat_settings
-
-        settings = get_chat_settings(chat_id)
-        configured_rules = str(settings.get("rules_text") or "").strip()
-        # Keep group-specific rules when an administrator has customized them.
-        # For untouched legacy defaults, use the dedicated rules.py module.
-        if configured_rules and configured_rules != LEGACY_DATABASE_DEFAULT:
-            rules = configured_rules
-        else:
-            rules = DEFAULT_RULES
-
-        if rules:
-            return "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n" + html.escape(rules)
-        return (
-            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
-            "Правила пока не настроены. Обратись к администрации группы."
+        # Telegram HTML blockquote displays the full rules as one quoted block.
+        result = (
+            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+            "<blockquote>" + html.escape(rules) + "</blockquote>" + footer
         )
+        if len(result) > 3900:
+            return (
+                "⚠️ Правила этой группы слишком длинные для одного сообщения Telegram. "
+                "Попроси администрацию сократить их до 3900 символов."
+            )
+        return result
     except Exception as exc:
         log.warning("Could not load rules for chat_id=%s (%s).", chat_id, type(exc).__name__)
         return "⚠️ Не удалось загрузить правила. Попробуй позже или обратись к администрации."
@@ -289,21 +276,10 @@ async def callback_rules(callback: CallbackQuery) -> None:
     chat_id, is_private = _callback_chat(callback)
     if callback.message is not None and chat_id is not None:
         staff = await _is_staff(chat_id, callback.from_user.id, is_private)
-        rules_text = await _rules_text(chat_id, is_private)
-        parts = _split_message_text(rules_text)
-
-        # Edit the existing menu message first, then send remaining chunks.
-        # Keep the navigation button on the final chunk so every part stays accessible.
         await callback.message.edit_text(
-            parts[0],
-            reply_markup=back_keyboard(staff) if len(parts) == 1 else None,
+            await _rules_text(chat_id, is_private),
+            reply_markup=back_keyboard(staff),
         )
-        for index, part in enumerate(parts[1:], start=1):
-            is_last = index == len(parts) - 1
-            await callback.message.answer(
-                part,
-                reply_markup=back_keyboard(staff) if is_last else None,
-            )
     await callback.answer()
 
 
