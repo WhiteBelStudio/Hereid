@@ -3229,8 +3229,16 @@ async def callbacks(callback: CallbackQuery):
         )
     elif key == "rules":
         cfg = get_chat_settings(callback.message.chat.id)
+        from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT
+        saved_rules = str(cfg.get("rules_text") or "").strip()
+        # Show the current full rules instead of the old database placeholder.
+        visible_rules = (
+            DEFAULT_RULES
+            if not saved_rules or saved_rules == LEGACY_DATABASE_DEFAULT
+            else saved_rules
+        )
         await callback.message.edit_text(
-            "⚖️ <b>Правила чата</b>\n\n" + html.escape(cfg["rules_text"]),
+            "⚖️ <b>Правила чата</b>\n\n" + html.escape(visible_rules),
             reply_markup=home_keyboard(),
         )
     elif key == "contact":
