@@ -3229,12 +3229,12 @@ async def callbacks(callback: CallbackQuery):
         )
     elif key == "rules":
         cfg = get_chat_settings(callback.message.chat.id)
-        from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT
+        from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT, PREVIOUS_DEFAULT_RULES
         saved_rules = str(cfg.get("rules_text") or "").strip()
         # Show the current full rules instead of the old database placeholder.
         visible_rules = (
             DEFAULT_RULES
-            if not saved_rules or saved_rules == LEGACY_DATABASE_DEFAULT
+            if not saved_rules or saved_rules in (LEGACY_DATABASE_DEFAULT, PREVIOUS_DEFAULT_RULES)
             else saved_rules
         )
         rule_lines = visible_rules.splitlines(keepends=True)
