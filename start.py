@@ -119,27 +119,36 @@ async def _is_staff(chat_id: int, user_id: int, is_private: bool) -> bool:
 
 
 async def _rules_text(chat_id: int, is_private: bool) -> str:
-    if is_private:
-        return (
-            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
-            "Чтобы показать актуальные правила конкретной группы, открой это меню "
-            "в самой группе или попроси администратора настроить правила через панель бота."
-        )
     try:
+        from rules import DEFAULT_RULES, LEGACY_DATABASE_DEFAULT
+
+        if is_private:
+            return (
+                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+                + html.escape(DEFAULT_RULES)
+                + "\\n\\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
+            )
+
         from main import get_chat_settings
 
         settings = get_chat_settings(chat_id)
-        rules = str(settings.get("rules_text") or "").strip()
+        configured_rules = str(settings.get("rules_text") or "").strip()
+        # Keep group-specific rules when an administrator has customized them.
+        # For untouched legacy defaults, use the dedicated rules.py module.
+        if configured_rules and configured_rules != LEGACY_DATABASE_DEFAULT:
+            rules = configured_rules
+        else:
+            rules = DEFAULT_RULES
+
         if rules:
-            return "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n" + html.escape(rules)
+            return "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n" + html.escape(rules)
         return (
-            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
+            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
             "Правила пока не настроены. Обратись к администрации группы."
         )
     except Exception as exc:
         log.warning("Could not load rules for chat_id=%s (%s).", chat_id, type(exc).__name__)
         return "⚠️ Не удалось загрузить правила. Попробуй позже или обратись к администрации."
-
 
 async def _rp_keywords_text(chat_id: int, is_private: bool) -> str:
     if is_private:
