@@ -292,19 +292,39 @@ async def callback_home(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "start:rules")
 async def callback_rules(callback: CallbackQuery) -> None:
+    staff = False
     chat_id, is_private = _callback_chat(callback)
+
     if callback.message is not None and chat_id is not None:
         staff = await _is_staff(chat_id, callback.from_user.id, is_private)
-        parts = await _rules_parts(chat_id, is_private)
-        await callback.message.edit_text(
-            parts[0],
-            reply_markup=back_keyboard(staff) if len(parts) == 1 else None,
+
+        rules_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📖 Прочитать правила (обязательно)",
+                        url="https://telegra.ph/Pravila-chata-Besedka-Nugzarchika-10-12",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Главное меню",
+                        callback_data="start:home",
+                    )
+                ],
+            ]
         )
-        for index, part in enumerate(parts[1:], start=1):
-            await callback.message.answer(
-                part,
-                reply_markup=back_keyboard(staff) if index == len(parts) - 1 else None,
-            )
+
+        await callback.message.edit_text(
+            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+            "Полная редакция правил опубликована в Telegraph.\\n\\n"
+            "❗️ <b>Ознакомление с правилами обязательно для всех участников.</b>\\n"
+            "Продолжая участие в сообществе, ты подтверждаешь, что ознакомился "
+            "с правилами и обязуешься их соблюдать.\\n\\n"
+            "👇 Нажми кнопку ниже, чтобы открыть правила:",
+            reply_markup=rules_keyboard,
+        )
+
     await callback.answer()
 
 
