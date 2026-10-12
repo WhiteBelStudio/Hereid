@@ -44,9 +44,7 @@ def welcome_text(name: str, is_staff: bool = False) -> str:
         else ""
     )
     return (
-        "╭━━━━━━━━━━━━━━━━━━╮\n"
-        "     🕊️ <b>HERADELEGEND</b>\n"
-        "╰━━━━━━━━━━━━━━━━━━╯\n\n"
+        "🕊️ <b>HERADELEGEND</b>\n\n"
         f"👋 Добро пожаловать, <b>{safe_name}</b>!\n\n"
         "Я помогаю поддерживать порядок, знакомиться с правилами "
         "и пользоваться возможностями сообщества.\n\n"
