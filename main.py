@@ -2200,6 +2200,20 @@ async def reputation_command(message: Message):
 async def router(message: Message):
     if not message.text or not message.from_user or message.from_user.is_bot:
         return
+
+    # Last-resort /start response in the main text router. This protects against
+    # stale/overlapping router registration and supports /start@BotUsername.
+    if re.match(r"^/start(?:@\\w+)?(?:\\s|$)", message.text.strip(), flags=re.IGNORECASE):
+        from start import main_menu_keyboard, welcome_text
+        try:
+            staff = await has_permission(message.chat.id, message.from_user.id, "moderate")
+        except Exception:
+            staff = False
+        await message.answer(
+            welcome_text(message.from_user.first_name or "участник", staff),
+            reply_markup=main_menu_keyboard(staff),
+        )
+        return
     if message.chat.type != ChatType.PRIVATE:
         with db() as con:
             pending_chat_setting = con.execute(
