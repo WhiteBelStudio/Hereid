@@ -1131,16 +1131,40 @@ async def send_help(message: Message):
     chunks = []
     current = header
     for row in rows:
-        keywords = ", ".join(
-            part.strip() for part in str(row["keywords"] or "").split(",") if part.strip()
-        )
+        name = html.escape(str(row["name"] or "RP-действие"))
+        keywords = [
+            part.strip()
+            for part in str(row["keywords"] or "").split(",")
+            if part.strip()
+        ]
         if not keywords:
             continue
-        line = f"\n• <b>{html.escape(str(row['name']))}</b>: <code>{html.escape(keywords)}</code>"
-        if len(current) + len(line) > 3400:
-            chunks.append(current)
-            current = header + "\n(продолжение)\n"
-        current += line
+
+        # Keep individual lines and Telegram messages comfortably below the 4096-char limit.
+        groups = []
+        group = []
+        group_length = 0
+        for keyword in keywords:
+            escaped_keyword = html.escape(keyword)
+            extra_length = len(escaped_keyword) + (2 if group else 0)
+            if group and group_length + extra_length > 1200:
+                groups.append(group)
+                group = []
+                group_length = 0
+                extra_length = len(escaped_keyword)
+            group.append(escaped_keyword)
+            group_length += extra_length
+        if group:
+            groups.append(group)
+
+        for index, word_group in enumerate(groups):
+            prefix = f"\n• <b>{name}</b>: " if index == 0 else "\n  "
+            line = prefix + "<code>" + ", ".join(word_group) + "</code>"
+            if len(current) + len(line) > 3400:
+                chunks.append(current)
+                current = header + "\n(продолжение)\n"
+            current += line
+
     if current != header:
         chunks.append(current)
 
@@ -1149,7 +1173,6 @@ async def send_help(message: Message):
         return
     for chunk in chunks:
         await message.answer(chunk)
-
 
 def role_overview(chat_id: int, viewer_id: int):
     """Show role management controls and the viewer's current effective role."""
