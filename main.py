@@ -21,7 +21,7 @@ from aiogram.filters import Command
 
 load_dotenv()
 from aiogram.types import (
-    CallbackQuery, ChatMemberUpdated, ChatPermissions, ErrorEvent, InlineKeyboardButton,
+    CallbackQuery, ChatJoinRequest, ChatMemberUpdated, ChatPermissions, ErrorEvent, InlineKeyboardButton,
     InlineKeyboardMarkup, Message,
 )
 
@@ -966,6 +966,96 @@ async def handle_chat_member_update(event: ChatMemberUpdated):
         await bot.send_message(event.chat.id, rendered[:4000])
     except TelegramAPIError as exc:
         log.warning("Chat greeting failed for chat_id=%s (%s)", event.chat.id, type(exc).__name__)
+
+
+async def notify_join_request_admins(request: ChatJoinRequest) -> None:
+    """Notify the chat's Telegram admins privately after the request is auto-approved."""
+    chat_id = request.chat.id
+    user = request.from_user
+    admin_ids = set()
+
+    try:
+        admins = await bot.get_chat_administrators(chat_id)
+        admin_ids.update(
+            member.user.id
+            for member in admins
+            if member.user and not member.user.is_bot
+        )
+    except TelegramAPIError as exc:
+        log.warning(
+            "Cannot list admins for join-request notification chat_id=%s (%s)",
+            chat_id, type(exc).__name__,
+        )
+
+    if OWNER_TELEGRAM_ID.isdigit():
+        admin_ids.add(int(OWNER_TELEGRAM_ID))
+
+    username = f" (@{html.escape(user.username)})" if user.username else ""
+    safe_name = html.escape(user.full_name)
+    chat_title = html.escape(request.chat.title or str(chat_id))
+    notification = (
+        "📥 <b>Новая заявка в чат</b>\n\n"
+        f"💬 Чат: <b>{chat_title}</b>\n"
+        f"👤 Пользователь: <a href=\"tg://user?id={user.id}\">{safe_name}</a>{username}\n"
+        f"🆔 ID: <code>{user.id}</code>\n\n"
+        "✅ Бот уже автоматически одобрил заявку.\n"
+        "Если пользователь нормальный — нажмите «Оставить» или просто ничего не делайте.\n"
+        "Если нужно удалить его из чата — нажмите «Забанить»."
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Оставить",
+                callback_data=f"joinreq:keep:{chat_id}:{user.id}",
+            ),
+            InlineKeyboardButton(
+                text="⛔ Забанить",
+                callback_data=f"joinreq:ban:{chat_id}:{user.id}",
+            ),
+        ]
+    ])
+
+    delivered = 0
+    for admin_id in admin_ids:
+        try:
+            await bot.send_message(
+                admin_id,
+                notification,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            delivered += 1
+        except TelegramAPIError as exc:
+            # Telegram bots cannot initiate a private conversation: the admin must
+            # open the bot and send /start before private notifications can arrive.
+            log.info(
+                "Join-request DM not delivered to admin_id=%s chat_id=%s (%s); "
+                "the admin may need to open the bot and send /start.",
+                admin_id, chat_id, type(exc).__name__,
+            )
+
+    log.info(
+        "Join request auto-approved chat_id=%s user_id=%s admin_dms=%s/%s",
+        chat_id, user.id, delivered, len(admin_ids),
+    )
+
+
+@dp.chat_join_request()
+async def auto_approve_join_request(request: ChatJoinRequest) -> None:
+    """Approve incoming requests immediately, then send admins a private ban/keep choice."""
+    try:
+        await bot.approve_chat_join_request(
+            chat_id=request.chat.id,
+            user_id=request.from_user.id,
+        )
+    except TelegramAPIError as exc:
+        log.warning(
+            "Could not auto-approve join request chat_id=%s user_id=%s (%s)",
+            request.chat.id, request.from_user.id, type(exc).__name__,
+        )
+        return
+
+    await notify_join_request_admins(request)
 
 
 @dp.chat_member()
@@ -2588,6 +2678,66 @@ async def router(message: Message):
             await message.reply("📨 Опишите ситуацию и обратитесь к администрации чата. Не отправляйте пароли и коды входа.")
         else:
             await message.reply("📭 Приём обращений через бота временно отключён администрацией этого чата.")
+
+
+@dp.callback_query(F.data.startswith("joinreq:"))
+async def join_request_decision_callback(callback: CallbackQuery) -> None:
+    """Allow authorized staff to leave an auto-approved user alone or ban them."""
+    try:
+        _, action, raw_chat_id, raw_user_id = (callback.data or "").split(":")
+        chat_id, user_id = int(raw_chat_id), int(raw_user_id)
+    except (ValueError, TypeError):
+        await callback.answer("Некорректные данные кнопки.", show_alert=True)
+        return
+
+    actor = callback.from_user
+    if not actor or not await has_permission(chat_id, actor.id, "moderate"):
+        await callback.answer(
+            "⛔ Эта кнопка доступна только администрации чата.",
+            show_alert=True,
+        )
+        return
+
+    if action == "keep":
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramAPIError:
+                pass
+        await callback.answer("Пользователь уже одобрен и остаётся в чате.")
+        return
+
+    if action != "ban":
+        await callback.answer("Неизвестное действие.", show_alert=True)
+        return
+
+    try:
+        await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+    except TelegramAPIError as exc:
+        log.warning(
+            "Admin ban from join-request notification failed chat_id=%s user_id=%s actor_id=%s (%s)",
+            chat_id, user_id, actor.id, type(exc).__name__,
+        )
+        await callback.answer(
+            "Не удалось забанить. Проверьте права бота в чате.",
+            show_alert=True,
+        )
+        return
+
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(
+                f"⛔ Пользователь <code>{user_id}</code> забанен в чате "
+                f"<code>{chat_id}</code> администратором <code>{actor.id}</code>."
+            )
+        except TelegramAPIError:
+            pass
+    await callback.answer("Пользователь забанен.")
+    try:
+        log_action(chat_id, user_id, actor.id, "join_request_ban", "Забанен из уведомления о заявке")
+    except Exception as exc:
+        log.warning("Could not log join-request ban (%s)", type(exc).__name__)
 
 
 @dp.callback_query(F.data.startswith("captcha:answer:"))
