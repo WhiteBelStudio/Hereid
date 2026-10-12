@@ -822,6 +822,121 @@ def chat_settings_keyboard(chat_id: int, can_manage: bool):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+CAPTCHA_PENDING: dict[tuple[int, int], dict[str, int]] = {}
+CAPTCHA_TIMEOUT_SECONDS = max(30, min(300, int(os.getenv("CAPTCHA_TIMEOUT_SECONDS", "120"))))
+
+
+def captcha_locked_permissions() -> ChatPermissions:
+    return ChatPermissions(
+        can_send_messages=False, can_send_audios=False, can_send_documents=False,
+        can_send_photos=False, can_send_videos=False, can_send_video_notes=False,
+        can_send_voice_notes=False, can_send_polls=False, can_send_other_messages=False,
+        can_add_web_page_previews=False,
+    )
+
+
+def captcha_unlocked_permissions() -> ChatPermissions:
+    return ChatPermissions(
+        can_send_messages=True, can_send_audios=True, can_send_documents=True,
+        can_send_photos=True, can_send_videos=True, can_send_video_notes=True,
+        can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True,
+        can_add_web_page_previews=True,
+    )
+
+
+async def begin_captcha(chat_id: int, user_id: int, display_name: str) -> None:
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        if member.user.is_bot:
+            return
+        import random
+        a, b = random.randint(2, 9), random.randint(1, 9)
+        answer = a + b
+        key = (chat_id, user_id)
+        CAPTCHA_PENDING[key] = {"answer": answer}
+        await bot.restrict_chat_member(
+            chat_id, user_id, permissions=captcha_locked_permissions()
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text=str(value),
+                callback_data=f"captcha:answer:{chat_id}:{user_id}:{value}",
+            )
+            for value in sorted({answer, answer + 1, max(0, answer - 1)})
+        ]])
+        await bot.send_message(
+            chat_id,
+            f"🛡️ {html.escape(display_name)}, подтвердите, что вы не бот. "
+            f"Решите пример: <b>{a} + {b} = ?</b>\n"
+            f"У вас {CAPTCHA_TIMEOUT_SECONDS} секунд. До проверки отправка сообщений ограничена.",
+            reply_markup=keyboard,
+        )
+        asyncio.create_task(expire_captcha(chat_id, user_id))
+    except TelegramAPIError as exc:
+        CAPTCHA_PENDING.pop((chat_id, user_id), None)
+        log.warning(
+            "Captcha could not be started for chat_id=%s user_id=%s (%s); "
+            "check bot administrator permissions",
+            chat_id, user_id, type(exc).__name__,
+        )
+
+
+async def expire_captcha(chat_id: int, user_id: int) -> None:
+    await asyncio.sleep(CAPTCHA_TIMEOUT_SECONDS)
+    key = (chat_id, user_id)
+    if key not in CAPTCHA_PENDING:
+        return
+    CAPTCHA_PENDING.pop(key, None)
+    try:
+        await bot.ban_chat_member(chat_id, user_id)
+        await bot.unban_chat_member(chat_id, user_id, only_if_banned=True)
+        await bot.send_message(
+            chat_id, f"⏱ Проверка не пройдена вовремя. Участник <code>{user_id}</code> удалён."
+        )
+    except TelegramAPIError as exc:
+        log.warning(
+            "Captcha timeout removal failed for chat_id=%s user_id=%s (%s)",
+            chat_id, user_id, type(exc).__name__,
+        )
+
+
+async def handle_captcha_answer(callback: CallbackQuery) -> None:
+    try:
+        _, _, raw_chat_id, raw_user_id, raw_answer = (callback.data or "").split(":")
+        chat_id, user_id, answer = int(raw_chat_id), int(raw_user_id), int(raw_answer)
+    except (ValueError, TypeError):
+        await callback.answer("Некорректная кнопка проверки.", show_alert=True)
+        return
+    if not callback.from_user or callback.from_user.id != user_id:
+        await callback.answer("Эта проверка предназначена другому участнику.", show_alert=True)
+        return
+    key = (chat_id, user_id)
+    challenge = CAPTCHA_PENDING.get(key)
+    if challenge is None:
+        await callback.answer("Проверка уже завершена или истекла.", show_alert=True)
+        return
+    if answer != challenge["answer"]:
+        await callback.answer("❌ Неверный ответ. Попробуйте ещё раз.", show_alert=True)
+        return
+    CAPTCHA_PENDING.pop(key, None)
+    try:
+        await bot.restrict_chat_member(
+            chat_id, user_id, permissions=captcha_unlocked_permissions()
+        )
+        if callback.message:
+            await callback.message.edit_text("✅ Проверка пройдена! Теперь вы можете писать в чате.")
+        await callback.answer("Капча пройдена!")
+    except TelegramAPIError as exc:
+        log.warning(
+            "Captcha unlock failed for chat_id=%s user_id=%s (%s)",
+            chat_id, user_id, type(exc).__name__,
+        )
+        await callback.answer(
+            "Ответ верный, но снять ограничения не удалось. Сообщите администрации.",
+            show_alert=True,
+        )
+
+
 async def handle_chat_member_update(event: ChatMemberUpdated):
     if event.chat.type == ChatType.PRIVATE or not event.new_chat_member.user:
         return
@@ -833,13 +948,17 @@ async def handle_chat_member_update(event: ChatMemberUpdated):
     left = old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR) and new_status in (
         ChatMemberStatus.LEFT, ChatMemberStatus.KICKED,
     )
-    if joined and cfg["welcome_enabled"]:
-        template = cfg["welcome_text"]
+    user = event.new_chat_member.user
+    if joined:
+        await begin_captcha(event.chat.id, user.id, user.full_name)
+        if cfg["welcome_enabled"]:
+            template = cfg["welcome_text"]
+        else:
+            return
     elif left and cfg["goodbye_enabled"]:
         template = cfg["goodbye_text"]
     else:
         return
-    user = event.new_chat_member.user
     try:
         rendered = template.replace("{name}", html.escape(user.full_name)).replace(
             "{chat}", html.escape(event.chat.title or "этот чат")
@@ -2469,6 +2588,11 @@ async def router(message: Message):
             await message.reply("📨 Опишите ситуацию и обратитесь к администрации чата. Не отправляйте пароли и коды входа.")
         else:
             await message.reply("📭 Приём обращений через бота временно отключён администрацией этого чата.")
+
+
+@dp.callback_query(F.data.startswith("captcha:answer:"))
+async def captcha_answer_callback(callback: CallbackQuery):
+    await handle_captcha_answer(callback)
 
 
 @dp.callback_query(F.data)
