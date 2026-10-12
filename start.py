@@ -123,7 +123,7 @@ async def _rules_text(chat_id: int, is_private: bool) -> str:
         if is_private:
             rules = DEFAULT_RULES
             footer = (
-                "\\n\\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
+                "\n\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
             )
         else:
             from main import get_chat_settings
@@ -141,13 +141,13 @@ async def _rules_text(chat_id: int, is_private: bool) -> str:
 
         if not rules:
             return (
-                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
                 "Правила пока не настроены. Обратись к администрации группы."
             )
 
         # Telegram HTML blockquote displays the full rules as one quoted block.
         result = (
-            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
             "<blockquote>" + html.escape(rules) + "</blockquote>" + footer
         )
         if len(result) > 3900:
