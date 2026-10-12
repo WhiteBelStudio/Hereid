@@ -183,10 +183,18 @@ async def _rp_keywords_text(chat_id: int, is_private: bool) -> str:
 
         if len(lines) == 1:
             lines.append("У включённых действий пока нет ключевых слов.")
-        result = "\n".join(lines)
-        if len(result) > 3800:
-            result = result[:3700] + "\n\n<i>Список сокращён. Полный список доступен через /help в группе.</i>"
-        return result
+        # Keep the Telegram HTML message below its limit without slicing markup.
+        selected = [lines[0]]
+        omitted = False
+        for line in lines[1:]:
+            candidate = "\n".join(selected + [line])
+            if len(candidate) > 3500:
+                omitted = True
+                break
+            selected.append(line)
+        if omitted:
+            selected.append("<i>Список сокращён. Полный список доступен через /help в группе.</i>")
+        return "\n".join(selected)
     except Exception as exc:
         log.warning("Could not load RP keywords for chat_id=%s (%s).", chat_id, type(exc).__name__)
         return "⚠️ Не удалось загрузить ключевые слова этой группы."
@@ -210,11 +218,10 @@ async def _send_commands(
     user_id: int,
 ) -> None:
     staff = await _is_staff(chat_id, user_id, is_private)
-    text = PUBLIC_COMMANDS
-    if staff:
-        text += ADMIN_COMMANDS
-    text += "\n\n" + await _rp_keywords_text(chat_id, is_private)
+    text = PUBLIC_COMMANDS + (ADMIN_COMMANDS if staff else "")
     await target.answer(text, reply_markup=back_keyboard(staff))
+    # RP keyword lists can be long; send separately to respect Telegram's message limit.
+    await target.answer(await _rp_keywords_text(chat_id, is_private))
 
 
 @router.message(CommandStart())
@@ -265,12 +272,13 @@ async def callback_rules(callback: CallbackQuery) -> None:
 async def callback_commands(callback: CallbackQuery) -> None:
     chat_id, is_private = _callback_chat(callback)
     if callback.message is not None and chat_id is not None:
-        await _send_commands(
-            callback.message,
-            chat_id,
-            is_private,
-            callback.from_user.id,
+        staff = await _is_staff(chat_id, callback.from_user.id, is_private)
+        command_text = PUBLIC_COMMANDS + (ADMIN_COMMANDS if staff else "")
+        await callback.message.edit_text(
+            command_text,
+            reply_markup=back_keyboard(staff),
         )
+        await callback.message.answer(await _rp_keywords_text(chat_id, is_private))
     await callback.answer()
 
 
