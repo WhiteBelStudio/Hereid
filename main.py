@@ -30,7 +30,8 @@ from profile import format_participant_profile
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", "heradelegend.db")
 PROXY_URL = os.getenv("TELEGRAM_PROXY", "").strip() or None
-REQUEST_TIMEOUT = float(os.getenv("TELEGRAM_REQUEST_TIMEOUT", "60"))
+# Disable the Telegram HTTP request timeout.
+REQUEST_TIMEOUT = None
 OWNER_TELEGRAM_ID = os.getenv("OWNER_TELEGRAM_ID", "").strip()
 
 ROLE_LABELS = {
@@ -56,7 +57,7 @@ logging.basicConfig(
 log = logging.getLogger("heradeLegend")
 
 # Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
-session = AiohttpSession(proxy=PROXY_URL, timeout=REQUEST_TIMEOUT)
+session = AiohttpSession(proxy=PROXY_URL, timeout=None)
 bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -2938,15 +2939,14 @@ async def main():
     init_db()
     try:
         log.info(
-            "Starting heradeLegend moderation bot (proxy=%s, timeout=%ss)",
+            "Starting heradeLegend moderation bot (proxy=%s, timeout=disabled)",
             "enabled" if PROXY_URL else "disabled",
-            REQUEST_TIMEOUT,
         )
 
         # First try the configured connection. If the proxy is unreachable, retry
         # once without it; this lets the bot start on hosts with direct Telegram access.
         try:
-            me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+            me = await bot.get_me(request_timeout=None)
         except Exception as proxy_error:
             # aiohttp-socks may raise python_socks.ProxyError directly instead of
             # aiogram's TelegramNetworkError, so catch the proxy connector failure too.
@@ -2958,9 +2958,9 @@ async def main():
                 type(proxy_error).__name__,
             )
             await bot.session.close()
-            bot.session = AiohttpSession(timeout=REQUEST_TIMEOUT)
+            bot.session = AiohttpSession(timeout=None)
             try:
-                me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
+                me = await bot.get_me(request_timeout=None)
             except Exception as direct_error:
                 log.error(
                     "Direct Telegram connection also failed (%s). Check host outbound "
