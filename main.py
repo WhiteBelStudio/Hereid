@@ -18,6 +18,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command
+from start import router as start_router
 
 load_dotenv()
 from aiogram.types import (
@@ -60,6 +61,7 @@ log = logging.getLogger("heradeLegend")
 session = AiohttpSession(proxy=PROXY_URL, timeout=None)
 bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+dp.include_router(start_router)
 
 
 @contextmanager
@@ -1981,19 +1983,6 @@ async def moderation(message, cmd, args):
         await message.reply(f"🔊 Ограничение на отправку сообщений для участника <code>{uid}</code> снято.")
         return True
     return True
-
-
-@dp.message(Command("start"))
-async def start(message: Message):
-    await message.answer(
-        "👋 Привет! Я <b>heradeLegend</b> — бот для помощи в модерации чатов.\nВыберите нужный раздел в меню ниже или отправьте команду <code>/help</code>.",
-        reply_markup=home_keyboard(bool(message.from_user and message.chat.type != ChatType.PRIVATE and await has_permission(message.chat.id, message.from_user.id, "panel"))),
-    )
-
-
-@dp.message(Command("help"))
-async def help_command(message: Message):
-    await send_help(message)
 
 
 @dp.message(Command("admin"))
