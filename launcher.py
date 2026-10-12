@@ -82,6 +82,7 @@ def main() -> int:
         "main.py": b"timeout=disabled",
         "profile.py": b"def format_participant_profile",
         "start.py": b"router",
+        "rules.py": b"DEFAULT_RULES",
     }
     staged_data: dict[str, bytes] = {}
     staged_paths: dict[str, Path] = {}
