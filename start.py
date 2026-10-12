@@ -124,9 +124,9 @@ async def _rules_text(chat_id: int, is_private: bool) -> str:
 
         if is_private:
             return (
-                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+                "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
                 + html.escape(DEFAULT_RULES)
-                + "\\n\\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
+                + "\n\n<i>Это базовые правила. В конкретной группе администрация может настроить дополнительные правила.</i>"
             )
 
         from main import get_chat_settings
@@ -141,9 +141,9 @@ async def _rules_text(chat_id: int, is_private: bool) -> str:
             rules = DEFAULT_RULES
 
         if rules:
-            return "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n" + html.escape(rules)
+            return "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n" + html.escape(rules)
         return (
-            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\\n\\n"
+            "📜 <b>ПРАВИЛА СООБЩЕСТВА</b>\n\n"
             "Правила пока не настроены. Обратись к администрации группы."
         )
     except Exception as exc:
