@@ -17,7 +17,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from start import router as start_router
 
 load_dotenv()
@@ -62,6 +62,21 @@ session = AiohttpSession(proxy=PROXY_URL, timeout=None)
 bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 dp.include_router(start_router)
+
+
+@dp.message(CommandStart())
+async def fallback_start_command(message: Message) -> None:
+    """Fallback /start response if the welcome router is unavailable or outdated."""
+    log.warning("Fallback /start handler used; check that start.py was deployed correctly.")
+    user = message.from_user
+    name = html.escape(user.first_name if user and user.first_name else "участник")
+    from start import main_menu_keyboard
+    await message.answer(
+        "🕊️ <b>HERADELEGEND</b>\\n\\n"
+        f"👋 Добро пожаловать, <b>{name}</b>!\\n\\n"
+        "Я помогаю поддерживать порядок в сообществе. Выбери нужный раздел:",
+        reply_markup=main_menu_keyboard(False),
+    )
 
 
 @contextmanager
