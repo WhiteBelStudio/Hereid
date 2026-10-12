@@ -3237,10 +3237,37 @@ async def callbacks(callback: CallbackQuery):
             if not saved_rules or saved_rules == LEGACY_DATABASE_DEFAULT
             else saved_rules
         )
-        await callback.message.edit_text(
-            "⚖️ <b>Правила чата</b>\n\n" + html.escape(visible_rules),
-            reply_markup=home_keyboard(),
-        )
+        rule_lines = visible_rules.splitlines(keepends=True)
+        rule_chunks = []
+        current_chunk = ""
+        for line in rule_lines:
+            if len(current_chunk) + len(line) > 3200:
+                if current_chunk:
+                    rule_chunks.append(current_chunk.rstrip("\n"))
+                current_chunk = line
+            else:
+                current_chunk += line
+        if current_chunk:
+            rule_chunks.append(current_chunk.rstrip("\n"))
+        if not rule_chunks:
+            rule_chunks = [visible_rules]
+        for index, chunk in enumerate(rule_chunks):
+            title = (
+                "⚖️ <b>Правила чата</b>\n\n"
+                if index == 0
+                else f"⚖️ <b>Правила чата — продолжение ({index + 1}/{len(rule_chunks)})</b>\n\n"
+            )
+            text_part = title + "<blockquote>" + html.escape(chunk) + "</blockquote>"
+            if index == 0:
+                await callback.message.edit_text(
+                    text_part,
+                    reply_markup=home_keyboard() if len(rule_chunks) == 1 else None,
+                )
+            else:
+                await callback.message.answer(
+                    text_part,
+                    reply_markup=home_keyboard() if index == len(rule_chunks) - 1 else None,
+                )
     elif key == "contact":
         cfg = get_chat_settings(callback.message.chat.id)
         text = (
