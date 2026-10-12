@@ -125,22 +125,21 @@ def _split_message_text(text: str, limit: int = 3500) -> list[str]:
         # A single unusually long line must also be split to stay under Telegram's limit.
         while len(line) > limit:
             if current:
-                chunks.append(current.rstrip("\\n"))
+                chunks.append(current.rstrip("\n"))
                 current = ""
-            chunks.append(line[:limit].rstrip("\\n"))
+            chunks.append(line[:limit].rstrip("\n"))
             line = line[limit:]
 
         if len(current) + len(line) > limit:
             if current:
-                chunks.append(current.rstrip("\\n"))
+                chunks.append(current.rstrip("\n"))
             current = line
         else:
             current += line
 
     if current:
-        chunks.append(current.rstrip("\\n"))
+        chunks.append(current.rstrip("\n"))
     return chunks or [text[:limit]]
-
 
 async def _rules_text(chat_id: int, is_private: bool) -> str:
     try:
