@@ -22,10 +22,6 @@ def main_menu_keyboard(is_staff: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📜 Правила сообщества", callback_data="start:rules")],
         [InlineKeyboardButton(text="📚 Команды и ключевые слова", callback_data="start:commands")],
     ]
-    if is_staff:
-        rows.append(
-            [InlineKeyboardButton(text="🛡️ Панель администратора", callback_data="admin")]
-        )
     rows.append(
         [InlineKeyboardButton(text="📨 Обратиться к администрации", callback_data="start:contact")]
     )
