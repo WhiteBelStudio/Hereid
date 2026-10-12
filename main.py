@@ -57,12 +57,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("heradeLegend")
 
-# Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
-session = AiohttpSession(proxy=PROXY_URL, timeout=None)
-bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-dp.include_router(start_router)
-
 
 @dp.message(CommandStart())
 async def fallback_start_command(message: Message) -> None:
@@ -72,11 +66,18 @@ async def fallback_start_command(message: Message) -> None:
     name = html.escape(user.first_name if user and user.first_name else "участник")
     from start import main_menu_keyboard
     await message.answer(
-        "🕊️ <b>HERADELEGEND</b>\\n\\n"
-        f"👋 Добро пожаловать, <b>{name}</b>!\\n\\n"
+        "🕊️ <b>HERADELEGEND</b>\n\n"
+        f"👋 Добро пожаловать, <b>{name}</b>!\n\n"
         "Я помогаю поддерживать порядок в сообществе. Выбери нужный раздел:",
         reply_markup=main_menu_keyboard(False),
     )
+
+
+# Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
+session = AiohttpSession(proxy=PROXY_URL, timeout=None)
+bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+dp.include_router(start_router)
 
 
 @contextmanager
