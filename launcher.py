@@ -79,7 +79,7 @@ def main() -> int:
     # downloading the current source fails.
     files = {
         "requirements.txt": b"aiogram",
-        "main.py": b"timeout=disabled",
+        "main.py": b"REQUEST_TIMEOUT = 20",
         "profile.py": b"def format_participant_profile",
         "start.py": b"router",
         "rules.py": b"DEFAULT_RULES",
@@ -104,7 +104,7 @@ def main() -> int:
 
         print(
             f"[startup] Downloaded and validated source from "
-            f"{OWNER}/{REPO}@{BRANCH}; HTTP timeout disabled."
+            f"{OWNER}/{REPO}@{BRANCH}; HTTP request timeout set to 20 seconds."
         )
     except Exception as exc:
         for filename in files:
