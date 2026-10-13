@@ -32,7 +32,7 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", "heradelegend.db")
 PROXY_URL = os.getenv("TELEGRAM_PROXY", "").strip() or None
 # Disable the Telegram HTTP request timeout.
-REQUEST_TIMEOUT = None
+REQUEST_TIMEOUT = 20
 OWNER_TELEGRAM_ID = os.getenv("OWNER_TELEGRAM_ID", "").strip()
 
 ROLE_LABELS = {
@@ -59,7 +59,7 @@ log = logging.getLogger("heradeLegend")
 
 
 # Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
-session = AiohttpSession(proxy=PROXY_URL, timeout=None)
+session = AiohttpSession(proxy=PROXY_URL, timeout=REQUEST_TIMEOUT)
 bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 dp.include_router(start_router)
@@ -3310,14 +3310,15 @@ async def main():
     init_db()
     try:
         log.info(
-            "Starting heradeLegend moderation bot (proxy=%s, timeout=disabled)",
+            "Starting heradeLegend moderation bot (proxy=%s, request_timeout=%ss)",
             "enabled" if PROXY_URL else "disabled",
+            REQUEST_TIMEOUT,
         )
 
         # First try the configured connection. If the proxy is unreachable, retry
         # once without it; this lets the bot start on hosts with direct Telegram access.
         try:
-            me = await bot.get_me(request_timeout=None)
+            me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
         except Exception as proxy_error:
             # aiohttp-socks may raise python_socks.ProxyError directly instead of
             # aiogram's TelegramNetworkError, so catch the proxy connector failure too.
@@ -3329,9 +3330,9 @@ async def main():
                 type(proxy_error).__name__,
             )
             await bot.session.close()
-            bot.session = AiohttpSession(timeout=None)
+            bot.session = AiohttpSession(timeout=REQUEST_TIMEOUT)
             try:
-                me = await bot.get_me(request_timeout=None)
+                me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
             except Exception as direct_error:
                 log.error(
                     "Direct Telegram connection also failed (%s). Check host outbound "
