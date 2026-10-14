@@ -1,0 +1,7 @@
+# Copy this template to proxies.txt on the Pterodactyl server.
+# Add one working SOCKS5 or HTTP proxy URL per line.
+# Keep real proxy credentials out of Git.
+# Example formats:
+# socks5://proxy.example:1080
+# socks5://user:pass@proxy.example:1080
+# http://proxy.example:8080
