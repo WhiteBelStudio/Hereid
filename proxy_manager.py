@@ -8,11 +8,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import ssl
 import time
 from pathlib import Path
 from urllib.parse import quote
 
 from aiogram import Bot
+import certifi
+from aiohttp import TCPConnector
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 
@@ -116,7 +119,7 @@ class RotatingProxySession(AiohttpSession):
 
         self.candidates = ordered
         self._proxy_index = 0
-        self._proxy = ordered[0]
+        self._apply_route(ordered[0])
         if working:
             log.info(
                 "Proxy scan complete: %s working candidate(s); selected lowest-latency route (%d ms).",
@@ -126,11 +129,26 @@ class RotatingProxySession(AiohttpSession):
         else:
             log.warning("No proxy passed the Telegram API probe; trying direct connection first.")
 
+    def _apply_route(self, proxy: str | None) -> None:
+        # AiohttpSession caches its connector settings; assigning _proxy directly
+        # does not switch the actual network route.
+        if proxy is None:
+            self._connector_type = TCPConnector
+            self._connector_init = {
+                "ssl": ssl.create_default_context(cafile=certifi.where()),
+                "limit": 100,
+                "ttl_dns_cache": 3600,
+            }
+            self._proxy = None
+            self._should_reset_connector = True
+        else:
+            self.proxy = proxy
+
     async def _rotate(self) -> None:
         async with self._rotation_lock:
             self._proxy_index = (self._proxy_index + 1) % len(self.candidates)
-            self._proxy = self.candidates[self._proxy_index]
-            selected = self._proxy
+            selected = self.candidates[self._proxy_index]
+            self._apply_route(selected)
             log.warning(
                 "Network failure: switching Telegram route to %s.",
                 "direct connection" if selected is None else "another configured proxy",
