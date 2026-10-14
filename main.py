@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
+from proxy_manager import RotatingProxySession
 from aiogram.enums import ChatMemberStatus, ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
@@ -30,7 +30,6 @@ from profile import format_participant_profile
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", "heradelegend.db")
-PROXY_URL = os.getenv("TELEGRAM_PROXY", "").strip() or None
 # Disable the Telegram HTTP request timeout.
 REQUEST_TIMEOUT = 20
 OWNER_TELEGRAM_ID = os.getenv("OWNER_TELEGRAM_ID", "").strip()
@@ -58,8 +57,8 @@ logging.basicConfig(
 log = logging.getLogger("heradeLegend")
 
 
-# Proxy is optional. If supplied, it must be a working SOCKS5/HTTP proxy URL.
-session = AiohttpSession(proxy=PROXY_URL, timeout=REQUEST_TIMEOUT)
+# Proxy pool is optional; proxies.txt is re-ranked at startup and routes rotate on network failures.
+session = RotatingProxySession(timeout=REQUEST_TIMEOUT)
 bot = Bot(TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 dp.include_router(start_router)
@@ -3526,46 +3525,20 @@ async def main():
     init_db()
     try:
         log.info(
-            "Starting heradeLegend moderation bot (proxy=%s, request_timeout=%ss)",
-            "enabled" if PROXY_URL else "disabled",
+            "Starting heradeLegend moderation bot (proxy candidates=%s, request_timeout=%ss)",
+            max(0, len(session.candidates) - 1),
             REQUEST_TIMEOUT,
         )
 
-        # First try the configured connection. If the proxy is unreachable, retry
-        # once without it; this lets the bot start on hosts with direct Telegram access.
-        try:
-            me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
-        except Exception as proxy_error:
-            # aiohttp-socks may raise python_socks.ProxyError directly instead of
-            # aiogram's TelegramNetworkError, so catch the proxy connector failure too.
-            if not PROXY_URL:
-                raise
-            log.warning(
-                "Telegram connection through TELEGRAM_PROXY failed (%s). "
-                "Retrying once without proxy; proxy credentials are never logged.",
-                type(proxy_error).__name__,
-            )
-            await bot.session.close()
-            bot.session = AiohttpSession(timeout=REQUEST_TIMEOUT)
-            try:
-                me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
-            except Exception as direct_error:
-                log.error(
-                    "Direct Telegram connection also failed (%s). Check host outbound "
-                    "access to api.telegram.org:443 or configure a working TELEGRAM_PROXY. "
-                    "The bot was not started.",
-                    type(direct_error).__name__,
-                )
-                raise SystemExit(1) from None
-
+        # Probe the configured pool and sort working routes by measured Telegram API latency.
+        await session.discover_best(TOKEN)
+        me = await bot.get_me(request_timeout=REQUEST_TIMEOUT)
         log.info("Connected to Telegram as @%s (id=%s)", me.username, me.id)
         await dp.start_polling(bot)
     except TelegramNetworkError as exc:
-        # Do not dump a long connector traceback for a known startup connectivity failure.
         log.error(
-            "Could not connect to Telegram Bot API (%s). Direct access and/or the "
-            "configured proxy may be unavailable. Check outbound access to "
-            "api.telegram.org:443 and the TELEGRAM_PROXY setting. The bot was not started.",
+            "Could not connect to Telegram Bot API (%s). Check network access and the "
+            "proxies.txt / TELEGRAM_PROXY configuration. The bot was not started.",
             type(exc).__name__,
         )
         raise SystemExit(1) from None
