@@ -1,17 +1,18 @@
-"""SOCKS5/HTTP proxy pool with startup latency ranking and request failover.
+"""SOCKS5 proxy pool using one IPv4:port endpoint per line.
 
-Proxy file format: one URL per line, e.g. socks5://user:pass@host:1080.
-Plain host:port lines are treated as SOCKS5 endpoints.
+Example proxies.txt line: 209.97.150.167:1080
+Blank lines and lines beginning with # are ignored. Credentials and URL
+schemes are intentionally not supported by the proxy-list parser.
 """
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import ssl
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 from aiogram import Bot
 import certifi
@@ -24,24 +25,24 @@ NETWORK_ERROR_NAMES = ("proxy", "connection", "timeout", "network", "socket")
 
 
 def _normalise_proxy(line: str) -> str | None:
+    """Convert a plain IPv4:port line into an aiogram SOCKS5 proxy URL."""
     value = line.strip()
     if not value or value.startswith("#"):
         return None
-    if "://" not in value:
-        # Accept host:port and host:port:user:password.
-        parts = value.split(":")
-        if len(parts) == 2:
-            value = f"socks5://{parts[0]}:{parts[1]}"
-        elif len(parts) == 4:
-            host, port, username, password = parts
-            value = f"socks5://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
-        else:
-            log.warning("Skipping malformed proxy line (credentials are not logged).")
-            return None
-    if not value.lower().startswith(("socks5://", "http://", "https://")):
-        log.warning("Skipping unsupported proxy scheme.")
+
+    # The agreed list format is strictly IPv4:PORT; no credentials or schemes.
+    parts = value.split(":")
+    if len(parts) != 2:
         return None
-    return value
+    host, port_text = parts
+    try:
+        host = str(ipaddress.IPv4Address(host))
+        port = int(port_text)
+    except (ipaddress.AddressValueError, ValueError):
+        return None
+    if not 1 <= port <= 65535 or not port_text.isdigit():
+        return None
+    return f"socks5://{host}:{port}"
 
 
 def load_proxy_candidates() -> list[str | None]:
@@ -51,24 +52,38 @@ def load_proxy_candidates() -> list[str | None]:
         candidate = _normalise_proxy(configured)
         if candidate:
             candidates.append(candidate)
+        else:
+            log.warning("TELEGRAM_PROXY ignored: expected plain IPv4:PORT format.")
 
     path = Path(os.getenv("TELEGRAM_PROXY_LIST", "proxies.txt"))
+    malformed = 0
     try:
         if path.is_file():
             for line in path.read_text(encoding="utf-8-sig").splitlines():
-                candidate = _normalise_proxy(line)
-                if candidate and candidate not in candidates:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                candidate = _normalise_proxy(stripped)
+                if candidate is None:
+                    malformed += 1
+                elif candidate not in candidates:
                     candidates.append(candidate)
     except OSError as exc:
         log.warning("Could not read proxy list (%s).", type(exc).__name__)
 
-    # Direct connection is always retained as a final fallback.
+    if malformed:
+        log.warning(
+            "Skipped %d malformed proxy-list line(s); expected IPv4:PORT only.",
+            malformed,
+        )
+
+    # Keep direct connection available and avoid duplicate entries.
     candidates.append(None)
     return candidates
 
 
 class RotatingProxySession(AiohttpSession):
-    """Probe candidates at startup, then rotate after network failures."""
+    """Probe a bounded proxy sample at startup and rotate after network failures."""
 
     def __init__(self, timeout: int = 20) -> None:
         self.candidates = load_proxy_candidates()
@@ -91,7 +106,7 @@ class RotatingProxySession(AiohttpSession):
                 await probe_session.close()
 
     async def discover_best(self, token: str) -> None:
-        # Avoid hammering Telegram or the host when a very large list is supplied.
+        # Limit startup probes to avoid hammering Telegram and the hosting network.
         candidates = self.candidates[:100]
         semaphore = asyncio.Semaphore(15)
         results = await asyncio.gather(
@@ -111,9 +126,15 @@ class RotatingProxySession(AiohttpSession):
 
         working.sort(key=lambda item: item[1])
         ordered: list[str | None] = [proxy for proxy, _ in working]
-        ordered.extend(proxy for proxy in failed if proxy not in ordered)
-        if None not in ordered:
+        # Direct connection is preferred if none of the probed proxies works.
+        if not working:
             ordered.append(None)
+        elif None not in ordered:
+            ordered.append(None)
+        ordered.extend(
+            proxy for proxy in failed
+            if proxy is not None and proxy not in ordered
+        )
         if not ordered:
             ordered = [None]
 
@@ -127,11 +148,12 @@ class RotatingProxySession(AiohttpSession):
                 round(working[0][1]),
             )
         else:
-            log.warning("No proxy passed the Telegram API probe; trying direct connection first.")
+            log.warning(
+                "No proxy passed the Telegram API probe; trying direct connection first, then failed candidates."
+            )
 
     def _apply_route(self, proxy: str | None) -> None:
-        # AiohttpSession caches its connector settings; assigning _proxy directly
-        # does not switch the actual network route.
+        # AiohttpSession caches connector settings; reset them when switching to direct.
         if proxy is None:
             self._connector_type = TCPConnector
             self._connector_init = {
@@ -155,13 +177,12 @@ class RotatingProxySession(AiohttpSession):
             )
 
     async def make_request(self, bot, method, timeout=None):
-        # Retrying a mutating method can duplicate an action if Telegram accepted
-        # it but the response was lost. Rotate for the next request, but retry only
-        # safe connection/bootstrap methods here.
+        # Retrying mutating methods may duplicate actions if Telegram accepted them
+        # but the response was lost. Retry only safe connection/bootstrap methods.
         safe_to_retry = getattr(method, "__api_method__", "") in {"getUpdates", "getMe"}
         attempts = len(self.candidates) if safe_to_retry else 1
         last_error = None
-        for attempt in range(max(1, attempts)):
+        for _ in range(max(1, attempts)):
             try:
                 return await super().make_request(bot, method, timeout=timeout)
             except TelegramAPIError as exc:
