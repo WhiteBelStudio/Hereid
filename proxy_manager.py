@@ -35,7 +35,7 @@ def _normalise_proxy(line: str) -> str | None:
         else:
             log.warning("Skipping malformed proxy line (credentials are not logged).")
             return None
-    if not value.lower().startswith(("socks5://", "socks5h://", "http://", "https://")):
+    if not value.lower().startswith(("socks5://", "http://", "https://")):
         log.warning("Skipping unsupported proxy scheme.")
         return None
     return value
