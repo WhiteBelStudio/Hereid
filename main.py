@@ -167,6 +167,13 @@ def init_db():
           created_at TEXT NOT NULL,
           PRIMARY KEY(chat_id, user_id)
         );
+        CREATE TABLE IF NOT EXISTS pending_xp_operations(
+          chat_id INTEGER NOT NULL,
+          owner_id INTEGER NOT NULL,
+          operation TEXT NOT NULL CHECK(operation IN ('grant','remove')),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(chat_id, owner_id)
+        );
         CREATE TABLE IF NOT EXISTS moderation_settings(
           chat_id INTEGER PRIMARY KEY,
           antispam_enabled INTEGER NOT NULL DEFAULT 1,
@@ -1684,9 +1691,9 @@ def action_log_page(chat_id: int, page: int = 0, page_size: int = 8):
     return "\n\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def admin_keyboard():
-    """Main navigation for the admin panel. Feature modules are connected in later checklist items."""
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_keyboard(is_owner: bool = False):
+    """Main navigation for the admin panel. XP controls are only shown to the owner."""
+    rows = [
         [
             InlineKeyboardButton(text="👥 Пользователи", callback_data="panel:users"),
             InlineKeyboardButton(text="🎭 RP-действия", callback_data="panel:rp"),
@@ -1707,7 +1714,10 @@ def admin_keyboard():
             InlineKeyboardButton(text="🔄 Обновить панель", callback_data="admin"),
             InlineKeyboardButton(text="🏠 Главное меню", callback_data="home"),
         ],
-    ])
+    ]
+    if is_owner:
+        rows.insert(-1, [InlineKeyboardButton(text="⭐ Управление XP", callback_data="xpadmin:open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 HELP = (
@@ -1989,7 +1999,10 @@ async def moderation(message, cmd, args):
 @dp.message(Command("admin"))
 async def admin_command(message: Message):
     if await need_panel_access(message):
-        await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
+        await message.answer(
+            "🛡️ <b>Панель администратора</b>",
+            reply_markup=admin_keyboard(is_owner=OWNER_TELEGRAM_ID.isdigit() and message.from_user.id == int(OWNER_TELEGRAM_ID)),
+        )
 
 
 @dp.message(Command(commands=["xp", "level", "mylevel", "опыт", "уровень"]))
@@ -2477,6 +2490,51 @@ async def router(message: Message):
 
     if message.chat.type != ChatType.PRIVATE:
         with db() as con:
+            pending_xp = con.execute(
+                "SELECT operation FROM pending_xp_operations WHERE chat_id=? AND owner_id=?",
+                (message.chat.id, message.from_user.id),
+            ).fetchone()
+        if pending_xp:
+            if not (OWNER_TELEGRAM_ID.isdigit() and message.from_user.id == int(OWNER_TELEGRAM_ID)):
+                with db() as con:
+                    con.execute("DELETE FROM pending_xp_operations WHERE chat_id=? AND owner_id=?", (message.chat.id, message.from_user.id))
+                await message.reply("⛔ Управлять XP может только владелец. Операция отменена.")
+                return
+            value = (message.text or "").strip()
+            if value.casefold() == "отмена":
+                with db() as con:
+                    con.execute("DELETE FROM pending_xp_operations WHERE chat_id=? AND owner_id=?", (message.chat.id, message.from_user.id))
+                await message.reply("❌ Операция с XP отменена.")
+                return
+            parts = value.split()
+            if len(parts) != 2 or not all(part.isdigit() for part in parts):
+                await message.reply("⚠️ Формат: <code>Telegram_ID количество</code>, например <code>123456789 250</code>, или «отмена».")
+                return
+            target_id, amount = int(parts[0]), int(parts[1])
+            if target_id <= 0 or amount < 1 or amount > 1_000_000:
+                await message.reply("⚠️ ID должен быть положительным, количество XP — от 1 до 1 000 000.")
+                return
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with db() as con:
+                current = con.execute("SELECT xp FROM xp_profiles WHERE chat_id=? AND user_id=?", (message.chat.id, target_id)).fetchone()
+                old_xp = int(current["xp"]) if current else 0
+                new_xp = old_xp + amount if pending_xp["operation"] == "grant" else max(0, old_xp - amount)
+                con.execute(
+                    "INSERT INTO xp_profiles(chat_id,user_id,xp,eligible_messages,last_awarded_at,display_name,username,bio,created_at,updated_at) "
+                    "VALUES(?,?,?,0,0,'','','',?,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=excluded.xp,updated_at=excluded.updated_at",
+                    (message.chat.id, target_id, new_xp, now, now),
+                )
+                con.execute("DELETE FROM pending_xp_operations WHERE chat_id=? AND owner_id=?", (message.chat.id, message.from_user.id))
+            action_name = "xp_manual_grant" if pending_xp["operation"] == "grant" else "xp_manual_remove"
+            log_action(message.chat.id, target_id, message.from_user.id, action_name, f"XP: {old_xp} -> {new_xp}; requested={amount}")
+            await message.reply(
+                f"✅ XP обновлён для участника <code>{target_id}</code>.\n"
+                f"⭐ Было: <b>{old_xp} XP</b>\n📈 Стало: <b>{new_xp} XP</b>\n"
+                f"🔢 Запрошенное изменение: <b>{'+' if pending_xp['operation'] == 'grant' else '-'}{amount} XP</b>"
+            )
+            return
+
+        with db() as con:
             pending = con.execute(
                 "SELECT role FROM pending_role_changes WHERE chat_id=? AND admin_id=?",
                 (message.chat.id, message.from_user.id),
@@ -2851,6 +2909,10 @@ async def callbacks(callback: CallbackQuery):
         "panel:roles": "manage_roles",
         "panel:settings": "manage_settings",
         "panel:logs": "view_logs",
+        "xpadmin:open": "owner_xp",
+        "xpadmin:grant": "owner_xp",
+        "xpadmin:remove": "owner_xp",
+        "xpadmin:cancel": "owner_xp",
     }
     required_permission = admin_permissions.get(key)
     if key.startswith("logs:page:"):
@@ -2872,7 +2934,7 @@ async def callbacks(callback: CallbackQuery):
     is_admin_action = (
         key in {"admin", "commands", "stats"}
         or key.startswith((
-            "panel:", "roles:", "rp:", "mod:", "chatset:", "users:", "logs:page:"
+            "panel:", "roles:", "rp:", "mod:", "chatset:", "users:", "logs:page:", "xpadmin:"
         ))
     )
     if is_admin_action:
@@ -2887,14 +2949,24 @@ async def callbacks(callback: CallbackQuery):
             return
 
     if required_permission:
+        owner_only = required_permission == "owner_xp"
+        authorized = (
+            OWNER_TELEGRAM_ID.isdigit() and callback.from_user.id == int(OWNER_TELEGRAM_ID)
+        ) if owner_only else await has_permission(
+            callback.message.chat.id if callback.message else 0,
+            callback.from_user.id,
+            required_permission,
+        )
         if (
             not callback.message
             or callback.message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP)
-            or not await has_permission(
-                callback.message.chat.id, callback.from_user.id, required_permission
-            )
+            or not authorized
         ):
-            await callback.answer("⛔ Недостаточно прав для этого раздела.", show_alert=True)
+            await callback.answer(
+                "⛔ Только владелец бота может управлять XP." if owner_only
+                else "⛔ Недостаточно прав для этого раздела.",
+                show_alert=True,
+            )
             return
 
     if not callback.message:
@@ -2906,9 +2978,52 @@ async def callbacks(callback: CallbackQuery):
     cancel_pending_operations(callback.message.chat.id, callback.from_user.id)
 
     if key == "admin":
-        await callback.message.edit_text("🛡️ <b>Панель администратора</b>\nВыберите раздел:", reply_markup=admin_keyboard())
+        is_owner = OWNER_TELEGRAM_ID.isdigit() and callback.from_user.id == int(OWNER_TELEGRAM_ID)
+        await callback.message.edit_text(
+            "🛡️ <b>Панель администратора</b>\nВыберите раздел:",
+            reply_markup=admin_keyboard(is_owner=is_owner),
+        )
+    elif key == "xpadmin:open":
+        await callback.message.edit_text(
+            "⭐ <b>Управление XP</b>\n\nВыберите действие. Затем отправьте Telegram ID участника и количество XP через пробел.\nПример: <code>123456789 250</code>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Выдать XP", callback_data="xpadmin:grant")],
+                [InlineKeyboardButton(text="➖ Снять XP", callback_data="xpadmin:remove")],
+                [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+            ]),
+        )
+    elif key in ("xpadmin:grant", "xpadmin:remove"):
+        operation = "grant" if key.endswith(":grant") else "remove"
+        with db() as con:
+            con.execute(
+                "INSERT INTO pending_xp_operations(chat_id,owner_id,operation,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(chat_id,owner_id) DO UPDATE SET operation=excluded.operation,created_at=excluded.created_at",
+                (callback.message.chat.id, callback.from_user.id, operation, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+        await callback.message.edit_text(
+            ("➕ Выдать XP" if operation == "grant" else "➖ Снять XP") +
+            "\n\nОтправьте <code>Telegram_ID количество</code> (от 1 до 1 000 000 XP).\nДля отмены напишите «отмена».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="xpadmin:cancel")],
+                [InlineKeyboardButton(text="⬅️ К управлению XP", callback_data="xpadmin:open")],
+            ]),
+        )
+    elif key == "xpadmin:cancel":
+        with db() as con:
+            con.execute("DELETE FROM pending_xp_operations WHERE chat_id=? AND owner_id=?", (callback.message.chat.id, callback.from_user.id))
+        await callback.message.edit_text(
+            "⭐ <b>Управление XP</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Выдать XP", callback_data="xpadmin:grant")],
+                [InlineKeyboardButton(text="➖ Снять XP", callback_data="xpadmin:remove")],
+                [InlineKeyboardButton(text="⬅️ В панель", callback_data="admin")],
+            ]),
+        )
     elif key == "commands":
-        await callback.message.edit_text(COMMANDS, reply_markup=admin_keyboard())
+        await callback.message.edit_text(
+            COMMANDS,
+            reply_markup=admin_keyboard(is_owner=OWNER_TELEGRAM_ID.isdigit() and callback.from_user.id == int(OWNER_TELEGRAM_ID)),
+        )
     elif key == "stats":
         await callback.message.edit_text(
             statistics_text(callback.message.chat.id),
