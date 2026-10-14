@@ -2815,7 +2815,12 @@ async def router(message: Message):
             await message.reply(xp_leaderboard_text(message.chat.id))
     elif text in {"админ меню", "меню админа", "панель админа", "панель модератора"}:
         if await need_panel_access(message):
-            await message.answer("🛡️ <b>Панель администратора</b>", reply_markup=admin_keyboard())
+            await message.answer(
+                "🛡️ <b>Панель администратора</b>",
+                reply_markup=admin_keyboard(
+                    is_owner=OWNER_TELEGRAM_ID.isdigit() and message.from_user.id == int(OWNER_TELEGRAM_ID)
+                ),
+            )
     elif any(word in text for word in ("жалоба", "апелляция", "поддержка", "помогите")):
         cfg = get_chat_settings(message.chat.id)
         if cfg["reports_enabled"]:
