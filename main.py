@@ -2019,6 +2019,102 @@ async def xp_command(message: Message):
     )
 
 
+@dp.message(Command(commands=["violations", "нарушения", "violations_history"]))
+async def violations_command(message: Message):
+    """Публичная история нарушений участника в текущем чате; только чтение БД."""
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.answer("📋 История нарушений доступна в групповом чате.")
+        return
+
+    target = (
+        message.reply_to_message.from_user
+        if message.reply_to_message and message.reply_to_message.from_user
+        else message.from_user
+    )
+    if not target:
+        await message.reply("Не удалось определить участника. Ответьте командой на сообщение пользователя.")
+        return
+    if target.is_bot:
+        await message.reply("История нарушений ботов не отображается.")
+        return
+
+    try:
+        records = []
+        with db() as con:
+            table_columns = {}
+            for table in ("warnings", "reprimands", "actions"):
+                table_columns[table] = {
+                    row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+
+            for table, label in (("warnings", "Предупреждение"), ("reprimands", "Выговор")):
+                columns = table_columns[table]
+                if {"chat_id", "user_id", "created_at"}.issubset(columns):
+                    reason_expr = "reason" if "reason" in columns else "'' AS reason"
+                    rows = con.execute(
+                        f"SELECT created_at, {reason_expr} FROM {table} "
+                        "WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 50",
+                        (message.chat.id, target.id),
+                    ).fetchall()
+                    records.extend(
+                        (str(row["created_at"] or ""), label, str(row["reason"] or "Причина не указана"))
+                        for row in rows
+                    )
+
+            columns = table_columns["actions"]
+            if {"chat_id", "user_id", "action", "created_at"}.issubset(columns):
+                reason_expr = "reason" if "reason" in columns else "'' AS reason"
+                rows = con.execute(
+                    f"SELECT created_at, action, {reason_expr} FROM actions "
+                    "WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT 50",
+                    (message.chat.id, target.id),
+                ).fetchall()
+                action_labels = {
+                    "ban": "Блокировка", "unban": "Снятие блокировки",
+                    "mute": "Мут", "unmute": "Снятие мута",
+                    "warn": "Предупреждение", "reprimand": "Выговор",
+                    "antispam_flood_mute": "Автомодерация: флуд",
+                    "antispam_link_removed": "Автомодерация: ссылка",
+                    "join_request_ban": "Блокировка заявки",
+                }
+                records.extend(
+                    (
+                        str(row["created_at"] or ""),
+                        action_labels.get(str(row["action"]), str(row["action"] or "Действие")),
+                        str(row["reason"] or "Причина не указана"),
+                    )
+                    for row in rows
+                )
+    except sqlite3.Error:
+        log.exception("Failed to read violation history for chat_id=%s user_id=%s", message.chat.id, target.id)
+        await message.reply("⚠️ Не удалось прочитать историю нарушений из базы данных. Ошибка записана в лог.")
+        return
+
+    records.sort(key=lambda item: item[0], reverse=True)
+    display_name = html.escape(target.full_name or "Участник")
+    username = f" (@{html.escape(target.username)})" if target.username else ""
+    if not records:
+        await message.reply(
+            "📋 <b>История нарушений</b>\n\n"
+            f"👤 {display_name}{username}\n"
+            "Нарушений в истории этого чата не найдено."
+        )
+        return
+
+    lines = []
+    for created_at, label, reason in records[:15]:
+        safe_date = html.escape(created_at[:19].replace("T", " ") or "Дата не указана")
+        safe_label = html.escape(label)
+        safe_reason = html.escape(reason[:240])
+        lines.append(f"• <b>{safe_label}</b> — {safe_date}\n  Причина: {safe_reason}")
+    await message.reply(
+        "📋 <b>История нарушений</b>\n\n"
+        f"👤 {display_name}{username}\n"
+        f"📊 Записей найдено: <b>{len(records)}</b>\n\n"
+        + "\n\n".join(lines)
+    )
+
+
 @dp.message(Command(commands=["profile", "myprofile", "профиль"]))
 async def participant_profile_command(message: Message):
     if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
