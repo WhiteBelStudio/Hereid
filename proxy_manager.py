@@ -128,13 +128,14 @@ class RotatingProxySession(AiohttpSession):
         token: str,
         proxy: str | None,
         semaphore: asyncio.Semaphore,
+        timeout: int = 6,
     ) -> tuple[str | None, float, bool]:
         async with semaphore:
-            probe_session = AiohttpSession(proxy=proxy, timeout=6)
+            probe_session = AiohttpSession(proxy=proxy, timeout=timeout)
             probe_bot = Bot(token, session=probe_session)
             started = time.perf_counter()
             try:
-                await probe_bot.get_me(request_timeout=6)
+                await probe_bot.get_me(request_timeout=timeout)
                 return proxy, (time.perf_counter() - started) * 1000, True
             except Exception:
                 return proxy, float("inf"), False
@@ -220,12 +221,16 @@ class RotatingProxySession(AiohttpSession):
             count = len(self.candidates)
             semaphore = asyncio.Semaphore(1)
 
-            for step in range(1, count + 1):
+            # Avoid waiting through 100 dead endpoints for every failed request.
+            # Startup sorted previously working routes first, so try at most 12
+            # candidates per failure and use a short probe timeout.
+            scan_limit = min(count, 12)
+            for step in range(1, scan_limit + 1):
                 index = (self._proxy_index + step) % count
                 candidate = self.candidates[index]
 
                 _, latency, ok = await self._probe(
-                    self._bot_token, candidate, semaphore
+                    self._bot_token, candidate, semaphore, timeout=3
                 )
                 if not ok:
                     continue
@@ -239,7 +244,14 @@ class RotatingProxySession(AiohttpSession):
                 )
                 return True
 
-            log.error("No configured route can currently reach Telegram.")
+            log.error(
+                "No working route found in the next %d candidates; "
+                "will retry from the next route on the next network failure.",
+                scan_limit,
+            )
+            # Advance past this failed batch so later failures try a different
+            # portion of the candidate list instead of rescanning the same dead IPs.
+            self._proxy_index = (self._proxy_index + scan_limit) % count
             return False
 
     @staticmethod
