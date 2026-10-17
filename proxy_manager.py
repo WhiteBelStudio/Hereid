@@ -212,28 +212,51 @@ class RotatingProxySession(AiohttpSession):
         self._should_reset_connector = True
 
     async def _rotate(self) -> bool:
-        """Probe alternatives in turn; select only a route that reaches Telegram."""
+        """Probe a batch concurrently and switch to a route verified by Telegram."""
         async with self._rotation_lock:
             if not self._bot_token:
                 log.error("Proxy scan is not initialized with a bot token.")
                 return False
 
             count = len(self.candidates)
-            semaphore = asyncio.Semaphore(1)
+            if count <= 1:
+                return False
 
-            # Probe a small batch quickly; startup-ranked working routes are first.
-            # Keep failover bounded so a dead public proxy list cannot stall the bot.
-            scan_limit = min(count, 5)
-            for step in range(1, scan_limit + 1):
-                index = (self._proxy_index + step) % count
-                candidate = self.candidates[index]
+            # Public proxy lists are often mostly dead. Probe the next 20 in
+            # parallel instead of spending 2 seconds on each candidate serially.
+            batch_size = min(count - 1, 20)
+            indexes = [
+                (self._proxy_index + step) % count
+                for step in range(1, batch_size + 1)
+            ]
+            semaphore = asyncio.Semaphore(10)
+            results = await asyncio.gather(
+                *(
+                    self._probe(
+                        self._bot_token,
+                        self.candidates[index],
+                        semaphore,
+                        timeout=2,
+                    )
+                    for index in indexes
+                ),
+                return_exceptions=True,
+            )
 
-                _, latency, ok = await self._probe(
-                    self._bot_token, candidate, semaphore, timeout=2
-                )
-                if not ok:
+            verified: list[tuple[int, str | None, float]] = []
+            for index, result in zip(indexes, results):
+                if isinstance(result, Exception):
                     continue
+                proxy, latency, ok = result
+                if ok:
+                    verified.append((index, proxy, latency))
 
+            if verified:
+                # Prefer the fastest verified route; use original pool order as
+                # a deterministic tie-breaker.
+                index, candidate, latency = min(
+                    verified, key=lambda item: (item[2], indexes.index(item[0]))
+                )
                 self._proxy_index = index
                 self._apply_route(candidate)
                 log.warning(
@@ -243,16 +266,16 @@ class RotatingProxySession(AiohttpSession):
                 )
                 return True
 
-            # Even if every probe timed out, move the live session to the next
-            # candidate. The next safe request can then test it directly instead
-            # of repeatedly using the same dead route.
-            next_index = (self._proxy_index + scan_limit + 1) % count
+            # No route in this batch reached Telegram. Advance only one slot so
+            # subsequent retries do not skip candidates that have not been tried.
+            next_index = indexes[0]
             candidate = self.candidates[next_index]
             self._proxy_index = next_index
             self._apply_route(candidate)
             log.warning(
-                "No verified route in the last %d probes; trying the next candidate.",
-                scan_limit,
+                "No verified route among %d candidates; advancing to the next "
+                "candidate and allowing the request retry.",
+                batch_size,
             )
             return True
 
