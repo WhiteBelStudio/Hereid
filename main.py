@@ -64,6 +64,23 @@ dp = Dispatcher()
 dp.include_router(start_router)
 
 
+async def safe_callback_answer(callback: CallbackQuery) -> None:
+    """Answer callback queries without treating Telegram's expired-query response as a crash."""
+    try:
+        await callback.answer()
+    except TelegramBadRequest as exc:
+        message = str(exc).lower()
+        if (
+            "query is too old" in message
+            or "response timeout expired" in message
+            or "query id is invalid" in message
+        ):
+            log.debug("Skipped answering an expired callback query.")
+            return
+        raise
+
+
+
 @contextmanager
 def db():
     """Open a short-lived SQLite connection and always close it after the unit of work."""
@@ -2974,7 +2991,7 @@ async def callbacks(callback: CallbackQuery):
             return
 
     if not callback.message:
-        await callback.answer()
+        await safe_callback_answer(callback)
         return
 
     # Any inline-button interaction ends the previous text-input step for this
@@ -3201,7 +3218,7 @@ async def callbacks(callback: CallbackQuery):
         if key == "panel:logs":
             log_text, log_markup = action_log_page(callback.message.chat.id, 0)
             await callback.message.edit_text(log_text, reply_markup=log_markup)
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         if key == "panel:roles":
             markup = roles_keyboard()
@@ -3495,7 +3512,7 @@ async def callbacks(callback: CallbackQuery):
         await callback.message.edit_text(HELP, reply_markup=home_keyboard())
     else:
         await callback.message.edit_text("👋 <b>heradeLegend</b>\nВыберите нужный раздел в меню ниже.", reply_markup=home_keyboard())
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @dp.errors()
