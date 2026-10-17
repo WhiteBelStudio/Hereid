@@ -188,8 +188,12 @@ class RotatingProxySession(AiohttpSession):
 
         working.sort(key=lambda item: item[1])
         ordered = [proxy for proxy, _ in working]
+
+        # If no route passed the Telegram probe, actually try direct access
+        # first. Keep failed proxies after it for automatic failover.
         if None not in ordered:
             ordered.append(None)
+
         ordered.extend(
             proxy for proxy in failed
             if proxy is not None and proxy not in ordered
