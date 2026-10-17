@@ -3502,6 +3502,17 @@ async def callbacks(callback: CallbackQuery):
 async def handle_update_error(event: ErrorEvent):
     """Keep one failed Telegram API request from producing an unhandled update traceback."""
     error = event.exception
+    # Expired callback queries can be raised by any callback.answer() call.
+    # Check the text before class-specific handling so wrapped/subclassed errors
+    # are also treated as an expected Telegram callback expiry.
+    error_text = str(error).lower()
+    if (
+        "query is too old" in error_text
+        or "response timeout expired" in error_text
+        or "query id is invalid" in error_text
+    ):
+        log.debug("Ignored an expired or invalid callback query.")
+        return True
     if isinstance(error, TelegramNetworkError):
         log.warning(
             "Telegram API request timed out or failed while processing an update. "
