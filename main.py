@@ -3509,10 +3509,22 @@ async def handle_update_error(event: ErrorEvent):
             "The response could not be delivered because the connection failed."
         )
         return True
-    if isinstance(error, TelegramBadRequest) and "message is not modified" in str(error).lower():
-        # Re-rendering an unchanged panel is harmless; do not emit an error traceback.
-        log.debug("Skipped editing an unchanged Telegram message.")
-        return True
+    if isinstance(error, TelegramBadRequest):
+        message = str(error).lower()
+        if "message is not modified" in message:
+            # Re-rendering an unchanged panel is harmless.
+            log.debug("Skipped editing an unchanged Telegram message.")
+            return True
+        if (
+            "query is too old" in message
+            or "response timeout expired" in message
+            or "query id is invalid" in message
+        ):
+            # Callback queries expire quickly. The user may tap an old captcha
+            # button or Telegram may deliver the update after the query expired.
+            # This is expected and must not generate an error traceback.
+            log.debug("Ignored an expired or invalid callback query.")
+            return True
     log.error(
         "Unhandled update error (%s). Update processing was stopped for this update.",
         type(error).__name__,
