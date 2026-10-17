@@ -9,6 +9,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import random
 import ssl
 import time
 from pathlib import Path
@@ -145,14 +146,32 @@ class RotatingProxySession(AiohttpSession):
     async def discover_best(self, token: str) -> None:
         self._bot_token = token
 
-        # A huge public proxy list can contain tens of thousands of dead
-        # endpoints. Probe only a bounded sample during startup.
-        candidates = self.candidates[:100]
-        semaphore = asyncio.Semaphore(15)
-        log.info("Checking up to %d proxy candidates...", len(candidates))
+        # Public proxy lists are frequently stale and their working entries
+        # are not necessarily near the top. Sample across the full list while
+        # keeping startup bounded and responsive.
+        proxy_candidates = [proxy for proxy in self.candidates if proxy is not None]
+        sample_size = min(len(proxy_candidates), 250)
+        if len(proxy_candidates) > sample_size:
+            candidates = random.sample(proxy_candidates, sample_size)
+        else:
+            candidates = list(proxy_candidates)
+        # Probe direct access too; it may be more reliable than public proxies.
+        candidates.append(None)
+
+        semaphore = asyncio.Semaphore(30)
+        probe_timeout = 2
+        log.info(
+            "Checking %d sampled proxy candidates plus direct connection "
+            "(of %d configured candidates)...",
+            len(candidates) - 1,
+            len(proxy_candidates),
+        )
 
         results = await asyncio.gather(
-            *(self._probe(token, proxy, semaphore) for proxy in candidates),
+            *(
+                self._probe(token, proxy, semaphore, timeout=probe_timeout)
+                for proxy in candidates
+            ),
             return_exceptions=True,
         )
 
