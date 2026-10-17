@@ -80,6 +80,7 @@ def main() -> int:
     files = {
         "requirements.txt": b"aiogram",
         "main.py": b"REQUEST_TIMEOUT = 20",
+        "proxy_manager.py": b"class RotatingProxySession",
         "profile.py": b"def format_participant_profile",
         "start.py": b"router",
         "rules.py": b"DEFAULT_RULES",
