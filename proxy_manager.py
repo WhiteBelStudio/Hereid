@@ -221,16 +221,15 @@ class RotatingProxySession(AiohttpSession):
             count = len(self.candidates)
             semaphore = asyncio.Semaphore(1)
 
-            # Avoid waiting through 100 dead endpoints for every failed request.
-            # Startup sorted previously working routes first, so try at most 12
-            # candidates per failure and use a short probe timeout.
-            scan_limit = min(count, 12)
+            # Probe a small batch quickly; startup-ranked working routes are first.
+            # Keep failover bounded so a dead public proxy list cannot stall the bot.
+            scan_limit = min(count, 5)
             for step in range(1, scan_limit + 1):
                 index = (self._proxy_index + step) % count
                 candidate = self.candidates[index]
 
                 _, latency, ok = await self._probe(
-                    self._bot_token, candidate, semaphore, timeout=3
+                    self._bot_token, candidate, semaphore, timeout=2
                 )
                 if not ok:
                     continue
@@ -244,15 +243,18 @@ class RotatingProxySession(AiohttpSession):
                 )
                 return True
 
-            log.error(
-                "No working route found in the next %d candidates; "
-                "will retry from the next route on the next network failure.",
+            # Even if every probe timed out, move the live session to the next
+            # candidate. The next safe request can then test it directly instead
+            # of repeatedly using the same dead route.
+            next_index = (self._proxy_index + scan_limit + 1) % count
+            candidate = self.candidates[next_index]
+            self._proxy_index = next_index
+            self._apply_route(candidate)
+            log.warning(
+                "No verified route in the last %d probes; trying the next candidate.",
                 scan_limit,
             )
-            # Advance past this failed batch so later failures try a different
-            # portion of the candidate list instead of rescanning the same dead IPs.
-            self._proxy_index = (self._proxy_index + scan_limit) % count
-            return False
+            return True
 
     @staticmethod
     def _is_network_error(exc: Exception) -> bool:
@@ -275,7 +277,7 @@ class RotatingProxySession(AiohttpSession):
     async def make_request(self, bot, method, timeout=None):
         method_name = getattr(method, "__api_method__", "")
         safe_to_retry = method_name in SAFE_RETRY_METHODS
-        attempts = min(max(1, len(self.candidates)), 100) if safe_to_retry else 1
+        attempts = min(max(1, len(self.candidates)), 8) if safe_to_retry else 1
         last_error: Exception | None = None
 
         for attempt in range(attempts):
