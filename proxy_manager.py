@@ -48,7 +48,7 @@ SAFE_RETRY_METHODS = {
 
 NETWORK_ERROR_NAMES = (
     "proxy", "connection", "timeout", "network", "socket",
-    "connector", "serverdisconnected",
+    "connector", "serverdisconnected", "incompleteread", "eoferror",
 )
 
 # Public SOCKS5 feeds; each candidate must still pass a Telegram API probe.
@@ -305,9 +305,13 @@ class RotatingProxySession(AiohttpSession):
 
         self._should_reset_connector = True
 
-    async def _rotate(self) -> bool:
+    async def _rotate(self, failed_index: int | None = None) -> bool:
         """Probe a batch concurrently and switch to a route verified by Telegram."""
         async with self._rotation_lock:
+            # Another request may already have switched routes while this one
+            # waited for the lock. Avoid a stampede of redundant proxy scans.
+            if failed_index is not None and self._proxy_index != failed_index:
+                return True
             if not self._bot_token:
                 log.error("Proxy scan is not initialized with a bot token.")
                 return False
@@ -382,6 +386,8 @@ class RotatingProxySession(AiohttpSession):
                     TelegramNetworkError,
                     aiohttp.ClientError,
                     asyncio.TimeoutError,
+                    asyncio.IncompleteReadError,
+                    EOFError,
                     OSError,
                 ),
             )
@@ -398,6 +404,7 @@ class RotatingProxySession(AiohttpSession):
         last_error: Exception | None = None
 
         for attempt in range(attempts):
+            failed_index = self._proxy_index
             try:
                 return await super().make_request(
                     bot, method, timeout=timeout
@@ -415,7 +422,7 @@ class RotatingProxySession(AiohttpSession):
                 attempts,
             )
 
-            switched = await self._rotate()
+            switched = await self._rotate(failed_index=failed_index)
 
             if not safe_to_retry:
                 # Avoid duplicate sends/actions when Telegram may have accepted
