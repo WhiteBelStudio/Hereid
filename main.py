@@ -1068,20 +1068,66 @@ async def notify_join_request_admins(request: ChatJoinRequest) -> None:
 
 @dp.chat_join_request()
 async def auto_approve_join_request(request: ChatJoinRequest) -> None:
-    """Approve incoming requests immediately, then send admins a private ban/keep choice."""
-    try:
-        await bot.approve_chat_join_request(
-            chat_id=request.chat.id,
-            user_id=request.from_user.id,
-        )
-    except TelegramAPIError as exc:
-        log.warning(
-            "Could not auto-approve join request chat_id=%s user_id=%s (%s)",
-            request.chat.id, request.from_user.id, type(exc).__name__,
-        )
-        return
+    """Approve incoming requests with bounded network retries, then notify admins."""
+    chat_id = request.chat.id
+    user_id = request.from_user.id
+    approved = False
 
-    await notify_join_request_admins(request)
+    for attempt in range(3):
+        try:
+            await bot.approve_chat_join_request(
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            approved = True
+            break
+        except TelegramBadRequest as exc:
+            # A lost response can mean Telegram already accepted the approval.
+            # Confirm membership before treating "request not found" as failure.
+            message = str(exc).lower()
+            if "request not found" in message or "user not found" in message:
+                try:
+                    member = await bot.get_chat_member(chat_id, user_id)
+                    approved = member.status not in (
+                        ChatMemberStatus.LEFT, ChatMemberStatus.KICKED
+                    )
+                except Exception:
+                    approved = False
+                if approved:
+                    log.info(
+                        "Join request was already processed chat_id=%s user_id=%s.",
+                        chat_id, user_id,
+                    )
+                    break
+            log.warning(
+                "Telegram rejected join-request approval chat_id=%s user_id=%s (%s).",
+                chat_id, user_id, type(exc).__name__,
+            )
+            return
+        except (TelegramNetworkError, EOFError, OSError, asyncio.TimeoutError) as exc:
+            if attempt < 2:
+                log.warning(
+                    "Network error approving join request chat_id=%s user_id=%s "
+                    "(attempt %d/3, %s); retrying.",
+                    chat_id, user_id, attempt + 1, type(exc).__name__,
+                )
+                await asyncio.sleep(1 + attempt)
+                continue
+            log.warning(
+                "Could not auto-approve join request after retries "
+                "chat_id=%s user_id=%s (%s).",
+                chat_id, user_id, type(exc).__name__,
+            )
+            return
+        except Exception as exc:
+            log.warning(
+                "Unexpected error approving join request chat_id=%s user_id=%s (%s).",
+                chat_id, user_id, type(exc).__name__,
+            )
+            return
+
+    if approved:
+        await notify_join_request_admins(request)
 
 
 @dp.chat_member()
