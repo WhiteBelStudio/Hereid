@@ -51,6 +51,13 @@ NETWORK_ERROR_NAMES = (
     "connector", "serverdisconnected",
 )
 
+# Public SOCKS5 feeds; each candidate must still pass a Telegram API probe.
+REMOTE_SOCKS5_SOURCES = (
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+    "https://raw.githubusercontent.com/databay-labs/free-proxy-list/master/socks5.txt",
+    "https://raw.githubusercontent.com/litportnet/free-proxy-list/live/proxies/socks5.txt",
+)
+
 
 def _normalise_proxy(line: str) -> str | None:
     value = line.strip()
@@ -122,7 +129,61 @@ class RotatingProxySession(AiohttpSession):
         self._proxy_index = 0
         self._rotation_lock = asyncio.Lock()
         self._bot_token: str | None = None
+        self.remote_candidates: list[str] = []
         super().__init__(proxy=self.candidates[0], timeout=timeout)
+
+    async def _fetch_remote_candidates(self) -> list[str]:
+        """Load a bounded set of fresh public SOCKS5 candidates from GitHub."""
+        timeout = aiohttp.ClientTimeout(total=8, connect=4)
+        headers = {"User-Agent": "HeradeLegend-proxy-check/1.0"}
+        connector = aiohttp.TCPConnector(ssl=True, limit=6)
+        found: list[str] = []
+        seen: set[str] = {
+            proxy for proxy in self.candidates if proxy is not None
+        }
+
+        async with aiohttp.ClientSession(
+            timeout=timeout, headers=headers, connector=connector
+        ) as client:
+            async def fetch(url: str) -> list[str]:
+                try:
+                    async with client.get(url) as response:
+                        if response.status != 200:
+                            log.warning(
+                                "Remote proxy feed unavailable (HTTP %d).",
+                                response.status,
+                            )
+                            return []
+                        body = await response.text(errors="replace")
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                    log.warning(
+                        "Could not fetch a remote proxy feed (%s).",
+                        type(exc).__name__,
+                    )
+                    return []
+
+                parsed: list[str] = []
+                for line in body.splitlines()[:1500]:
+                    candidate = _normalise_proxy(line)
+                    if candidate and candidate not in seen:
+                        seen.add(candidate)
+                        parsed.append(candidate)
+                return parsed
+
+            batches = await asyncio.gather(
+                *(fetch(url) for url in REMOTE_SOCKS5_SOURCES),
+                return_exceptions=True,
+            )
+
+        for batch in batches:
+            if isinstance(batch, list):
+                found.extend(batch)
+
+        if found:
+            log.info("Loaded %d new SOCKS5 candidate(s) from public feeds.", len(found))
+        else:
+            log.warning("No new SOCKS5 candidates loaded from public feeds.")
+        return found
 
     @staticmethod
     async def _probe(
@@ -146,25 +207,35 @@ class RotatingProxySession(AiohttpSession):
     async def discover_best(self, token: str) -> None:
         self._bot_token = token
 
-        # Public proxy lists are frequently stale and their working entries
-        # are not necessarily near the top. Sample across the full list while
-        # keeping startup bounded and responsive.
-        proxy_candidates = [proxy for proxy in self.candidates if proxy is not None]
-        sample_size = min(len(proxy_candidates), 250)
-        if len(proxy_candidates) > sample_size:
-            candidates = random.sample(proxy_candidates, sample_size)
-        else:
-            candidates = list(proxy_candidates)
-        # Probe direct access too; it may be more reliable than public proxies.
+        # Refresh candidates from public SOCKS5 feeds without replacing the
+        # user's local proxies.txt list. Every route still needs a Telegram probe.
+        self.remote_candidates = await self._fetch_remote_candidates()
+        existing = [proxy for proxy in self.candidates if proxy is not None]
+        existing_set = set(existing)
+        self.candidates = existing + [
+            proxy for proxy in self.remote_candidates if proxy not in existing_set
+        ] + [None]
+
+        # Give fresh feeds a fair share of startup probes and sample the local pool.
+        remote_sample = self.remote_candidates[:150]
+        remote_set = set(remote_sample)
+        local_pool = [
+            proxy for proxy in self.candidates
+            if proxy is not None and proxy not in remote_set
+        ]
+        local_sample_size = min(len(local_pool), 250 - len(remote_sample))
+        local_sample = random.sample(local_pool, local_sample_size)
+        candidates = remote_sample + local_sample
         candidates.append(None)
 
         semaphore = asyncio.Semaphore(30)
         probe_timeout = 2
         log.info(
             "Checking %d sampled proxy candidates plus direct connection "
-            "(of %d configured candidates)...",
+            "(%d fresh-feed candidates; %d total configured candidates)...",
             len(candidates) - 1,
-            len(proxy_candidates),
+            len(remote_sample),
+            len(self.candidates) - 1,
         )
 
         results = await asyncio.gather(
