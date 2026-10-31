@@ -132,6 +132,7 @@ def main() -> int:
         subprocess.run(
             [
                 sys.executable, "-m", "pip", "install",
+                "--upgrade",
                 "--disable-pip-version-check",
                 "--no-warn-script-location",
                 "-r", str(requirements),
