@@ -908,8 +908,7 @@ async def notify_join_request_admins(request: ChatJoinRequest) -> None:
         f"💬 Чат: <b>{chat_title}</b>\n"
         f"👤 Пользователь: <a href=\"tg://user?id={user.id}\">{safe_name}</a>{username}\n"
         f"🆔 ID: <code>{user.id}</code>\n\n"
-        "✅ Бот уже автоматически одобрил заявку.\n"
-        "Если пользователь нормальный — нажмите «Оставить» или просто ничего не делайте.\n"
+        "✅ Заявка автоматически принята, пользователь добавлен в чат.\n"
         "Если нужно удалить его из чата — нажмите «Забанить»."
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
